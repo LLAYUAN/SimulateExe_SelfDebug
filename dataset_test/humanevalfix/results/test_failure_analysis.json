@@ -1,0 +1,57 @@
+{
+  "analysis_summary": {
+    "file1": "debug_results_20250707_180431.json",
+    "file2": "debug_results_20250707_193537.json",
+    "file1_failed_count": 31,
+    "file2_failed_count": 32,
+    "both_failed_count": 23,
+    "only_file1_failed_count": 8,
+    "only_file2_failed_count": 9
+  },
+  "both_failed_tasks": [
+    "Python/100",
+    "Python/101",
+    "Python/113",
+    "Python/120",
+    "Python/123",
+    "Python/124",
+    "Python/130",
+    "Python/132",
+    "Python/145",
+    "Python/149",
+    "Python/157",
+    "Python/159",
+    "Python/19",
+    "Python/32",
+    "Python/54",
+    "Python/64",
+    "Python/68",
+    "Python/74",
+    "Python/78",
+    "Python/83",
+    "Python/91",
+    "Python/93",
+    "Python/96"
+  ],
+  "only_file1_failed_tasks": [
+    "Python/102",
+    "Python/11",
+    "Python/134",
+    "Python/143",
+    "Python/154",
+    "Python/33",
+    "Python/37",
+    "Python/38"
+  ],
+  "only_file2_failed_tasks": [
+    "Python/108",
+    "Python/110",
+    "Python/111",
+    "Python/125",
+    "Python/126",
+    "Python/137",
+    "Python/30",
+    "Python/87",
+    "Python/88"
+  ]
+}
