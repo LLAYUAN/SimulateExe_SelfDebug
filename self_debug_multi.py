@@ -27,11 +27,11 @@ def extract_individual_test_cases(test_code: str, func_name: str) -> List[str]:
         if line.startswith('assert'):
             # 为每个assert创建一个完整的测试函数
             test_func = f"""
-def test_{func_name}():
-    {line}
+                        def test_{func_name}():
+                            {line}
 
-test_{func_name}()
-"""
+                        test_{func_name}()
+                        """
             individual_tests.append(test_func)
     
     return individual_tests
@@ -67,7 +67,7 @@ test_{func_name}()
     return individual_tests
 
 
-def selfdebug_multi(task_id: int = 42):
+def selfdebug_multi(task_id: int = 5):
     """
     多轮对话调试函数
     Args:
@@ -76,7 +76,7 @@ def selfdebug_multi(task_id: int = 42):
     logger.info(f"开始多轮调试任务 {task_id}")
     
     # 读取数据
-    with open("data/humanevalfix/humanevalpack.jsonl", "r", encoding="utf-8") as f:
+    with open("dataset_test/humanevalfix/humanevalpack.jsonl", "r", encoding="utf-8") as f:
         for i, line in enumerate(f, 1):
             if i == task_id:
                 data = json.loads(line.strip())
@@ -104,13 +104,7 @@ def selfdebug_multi(task_id: int = 42):
     # 提取测试用例
     test_cases = []
     
-    # 首先尝试从完整测试中提取
-    if 'test' in data and data['test']:
-        full_test_cases = extract_individual_test_cases(data['test'], func_name)
-        test_cases.extend(full_test_cases)
-        logger.info(f"从完整测试中提取了 {len(full_test_cases)} 个测试用例")
-    
-    # 然后从example_test中提取
+    # 从example_test中提取
     if 'example_test' in data and data['example_test']:
         example_test_cases = extract_test_cases_from_example(data['example_test'], func_name)
         test_cases.extend(example_test_cases)
@@ -118,7 +112,37 @@ def selfdebug_multi(task_id: int = 42):
     
     if not test_cases:
         logger.error("没有找到任何测试用例")
-        return
+        # 当没有测试用例时，直接使用chat_merge_debug_results进行调试
+        logger.info("=== 没有测试用例，直接使用合并调试功能 ===")
+        
+        # 创建一个基本的调试结果作为输入
+        basic_debug_result = {
+            "test_case": "No test cases available",
+            "bug_analysis": "No specific test cases to analyze, performing general code analysis",
+            "corrected_code": buggy_code,
+            "explanation": "No test cases provided, requiring general debugging approach"
+        }
+        
+        individual_results = [json.dumps(basic_debug_result, ensure_ascii=False)]
+        
+        try:
+            final_corrected_code = chat_merge_debug_results(
+                buggy_code=buggy_code,
+                individual_results=individual_results,
+                task_description=task_description
+            )
+            
+            logger.info("=== 直接调试完成 ===")
+            logger.info("最终修正代码：")
+            logger.info("="*50)
+            logger.info(final_corrected_code)
+            logger.info("="*50)
+            
+            return final_corrected_code
+            
+        except Exception as e:
+            logger.error(f"直接调试失败: {e}")
+            return buggy_code
     
     logger.info(f"总共提取了 {len(test_cases)} 个测试用例")
     
@@ -145,7 +169,6 @@ def selfdebug_multi(task_id: int = 42):
                 explanation = full_debug_json.get("explanation", "No explanation provided")
                 
                 # 提取第一个测试用例的分析信息（如果存在）
-                analysis_results = full_debug_json.get("analysis_results", [])
                 overall_analysis = full_debug_json.get("overall_analysis", {})
                 
                 # 构建简化的结果格式（保持与原来兼容）
@@ -155,13 +178,6 @@ def selfdebug_multi(task_id: int = 42):
                     "corrected_code": corrected_code,
                     "explanation": explanation
                 }
-                
-                # 如果有详细的分析结果，添加更多信息
-                if analysis_results:
-                    first_analysis = analysis_results[0]
-                    step3_analysis = first_analysis.get("step3_error_analysis", {})
-                    if step3_analysis.get("has_error", False):
-                        simplified_result["bug_analysis"] = step3_analysis.get("root_cause", simplified_result["bug_analysis"])
                 
                 result = json.dumps(simplified_result, ensure_ascii=False)
                 individual_results.append(result)
@@ -218,118 +234,11 @@ def selfdebug_multi(task_id: int = 42):
         logger.info(final_corrected_code)
         logger.info("="*50)
         
-        # 保存结果
-        result_summary = {
-            "task_id": task_id,
-            "function_name": func_name,
-            "task_description": task_description,
-            "original_buggy_code": buggy_code,
-            "num_test_cases": len(test_cases),
-            "individual_results": individual_results,
-            "final_corrected_code": final_corrected_code
-        }
-        
-        # 保存到文件
-        output_filename = f"./dataset_test/humanevalfix/results/multi_debug_results_{task_id}.json"
-        with open(output_filename, 'w', encoding='utf-8') as f:
-            json.dump(result_summary, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"详细结果已保存到 {output_filename}")
-        
         return final_corrected_code
         
     except Exception as e:
         logger.error(f"合并调试结果失败: {e}")
         return buggy_code
 
-
-def compare_with_single_debug(task_id: int = 42):
-    """
-    比较多轮调试和单轮调试的结果
-    Args:
-        task_id: 要调试的任务ID
-    """
-    from chat import chat_selfdebug
-    
-    logger.info(f"=== 开始比较调试方法 ===")
-    
-    # 读取数据
-    with open("data/humanevalfix/humanevalpack.jsonl", "r", encoding="utf-8") as f:
-        for i, line in enumerate(f, 1):
-            if i == task_id:
-                data = json.loads(line.strip())
-                break
-        else:
-            logger.error(f"文件中没有第{task_id}行")
-            return
-    
-    buggy_code = extract_buggy_code(data)
-    example_test = data["example_test"]
-    func_name = data["entry_point"]
-    task_description = data["docstring"]
-    
-    try:
-        textcfg = TextCFG("buggy_code.py", func_name)
-        cfg_text = textcfg.cfg_text
-    except Exception as e:
-        logger.warning(f"CFG构建失败: {e}")
-        cfg_text = ""
-    
-    # 单轮调试
-    logger.info("=== 执行单轮调试 ===")
-    single_result = chat_selfdebug(buggy_code, example_test, task_description, cfg_text)
-    
-    try:
-        single_json = json.loads(single_result)
-        single_corrected_code = single_json.get('corrected_code', buggy_code)
-    except json.JSONDecodeError:
-        single_corrected_code = buggy_code
-        logger.error("单轮调试结果JSON解析失败")
-    
-    # 多轮调试
-    logger.info("=== 执行多轮调试 ===")
-    multi_corrected_code = selfdebug_multi(task_id)
-    
-    # 比较结果
-    logger.info("=== 调试结果比较 ===")
-    logger.info("单轮调试结果：")
-    logger.info("-" * 30)
-    logger.info(single_corrected_code)
-    logger.info("-" * 30)
-    
-    logger.info("多轮调试结果：")
-    logger.info("-" * 30)
-    logger.info(multi_corrected_code)
-    logger.info("-" * 30)
-    
-    # 保存比较结果
-    comparison_result = {
-        "task_id": task_id,
-        "function_name": func_name,
-        "task_description": task_description,
-        "original_buggy_code": buggy_code,
-        "single_debug_result": single_corrected_code,
-        "multi_debug_result": multi_corrected_code,
-        "single_debug_full": single_result
-    }
-    
-    comparison_filename = f"debug_comparison_{task_id}.json"
-    with open(comparison_filename, 'w', encoding='utf-8') as f:
-        json.dump(comparison_result, f, indent=2, ensure_ascii=False)
-    
-    logger.info(f"比较结果已保存到 {comparison_filename}")
-
-
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) > 1:
-        if sys.argv[1] == "compare":
-            task_id = int(sys.argv[2]) if len(sys.argv) > 2 else 42
-            compare_with_single_debug(task_id)
-        else:
-            task_id = int(sys.argv[1])
-            selfdebug_multi(task_id)
-    else:
-        logger.info("开始多轮调试测试...")
-        selfdebug_multi(42) 
+    selfdebug_multi(5)

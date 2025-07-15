@@ -1,2 +1,6 @@
-def car_race_collision(n: int):
-    return n**3
+from typing import List
+
+
+def mean_absolute_deviation(numbers: List[float]) -> float:
+    mean = sum(numbers) / len(numbers)
+    return sum(abs(x - mean) for x in numbers) / mean

@@ -3,14 +3,19 @@ from loguru import logger
 import time
 import re
 import json
+import os
+from dotenv import load_dotenv
 from typing import List
+
+# 加载环境变量
+load_dotenv()
 
 GPT_MODEL = "openai/gpt-4o-mini"
 GPT_BASE_URL = "https://openrouter.ai/api/v1"
-GPT_API_KEY = "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"
+GPT_API_KEY = os.getenv("GPT_API_KEY")
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
-DEEPSEEK_API_KEY = "sk-faebc4b10dd047d58459d9d5f97dcf21"
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 client = OpenAI(
     base_url=GPT_BASE_URL,

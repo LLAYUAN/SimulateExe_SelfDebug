@@ -7,12 +7,13 @@ from pathlib import Path
 from loguru import logger
 from typing import Dict, List, Set, Optional, Tuple, Any
 import copy
+import re
 
 
 class JavaCFG:
     def __init__(self, source_path: str, target_method: str = None, target_class: str = None):
         """
-        Java函数级CFG构建器 - 支持Java语句类型，一行一个block
+        改进的Java函数级CFG构建器
         Args:
             source_path: Java源代码文件路径
             target_method: 目标方法名（不包含参数），如果不指定则使用第一个方法
@@ -21,6 +22,17 @@ class JavaCFG:
         self.source_path = source_path
         self.source_code = Path(source_path).read_text(encoding='utf-8')
         self.source_lines = self.source_code.splitlines()
+        
+        # Java关键字集合
+        self.java_keywords = {
+            'abstract', 'assert', 'boolean', 'break', 'byte', 'case', 'catch', 'char',
+            'class', 'const', 'continue', 'default', 'do', 'double', 'else', 'enum',
+            'extends', 'final', 'finally', 'float', 'for', 'goto', 'if', 'implements',
+            'import', 'instanceof', 'int', 'interface', 'long', 'native', 'new',
+            'package', 'private', 'protected', 'public', 'return', 'short', 'static',
+            'strictfp', 'super', 'switch', 'synchronized', 'this', 'throw', 'throws',
+            'transient', 'try', 'void', 'volatile', 'while'
+        }
         
         # 解析Java AST
         self.java_ast = self._parse_java_ast()
@@ -71,65 +83,51 @@ class JavaCFG:
         self.block_code_list = [block['code'] for block in self.blocks]
     
     def _parse_java_ast(self) -> Dict:
-        """使用JavaParser解析Java代码"""
-        try:
-            # 创建临时Java文件
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.java', delete=False) as f:
-                f.write(self.source_code)
-                temp_java_file = f.name
-            
-            # 使用JavaParser解析（需要安装JavaParser的Python绑定）
-            # 这里我们使用一个简化的方法，通过外部Java程序来解析
-            ast_data = self._parse_with_external_parser(temp_java_file)
-            
-            # 清理临时文件
-            os.unlink(temp_java_file)
-            
-            return ast_data
-        except Exception as e:
-            logger.error(f"Java AST解析失败: {e}")
-            return self._fallback_parse()
+        """使用改进的Java解析方法"""
+        return self._improved_parse()
     
-    def _parse_with_external_parser(self, java_file: str) -> Dict:
-        """使用外部JavaParser解析Java文件"""
-        # 这里需要一个Java程序来解析AST并输出JSON
-        # 为了简化，我们使用正则表达式进行基本解析
-        return self._fallback_parse()
-    
-    def _fallback_parse(self) -> Dict:
-        """回退的简单解析方法，使用正则表达式"""
-        import re
-        
-        # 简单解析类和方法
+    def _improved_parse(self) -> Dict:
+        """改进的Java代码解析方法"""
         classes = {}
         methods = {}
         
-        # 解析类定义
-        class_pattern = r'(?:public\s+)?(?:abstract\s+)?class\s+(\w+)'
+        # 解析类定义 - 更精确的正则表达式
+        class_pattern = r'(?:public\s+|private\s+|protected\s+)?(?:abstract\s+|final\s+)?class\s+(\w+)(?:\s+extends\s+\w+)?(?:\s+implements\s+[\w,\s]+)?\s*\{'
         for match in re.finditer(class_pattern, self.source_code):
             class_name = match.group(1)
             classes[class_name] = {
                 'name': class_name,
-                'start_line': self.source_code[:match.start()].count('\n') + 1
+                'start_line': self.source_code[:match.start()].count('\n') + 1,
+                'start_pos': match.start(),
+                'end_pos': self._find_class_end(match.start())
             }
         
-        # 解析方法定义
-        method_pattern = r'(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:\w+\s+)*(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{'
+        # 解析方法定义 - 更精确的正则表达式
+        method_pattern = r'(?:public\s+|private\s+|protected\s+)?(?:static\s+)?(?:final\s+)?(?:\w+(?:\[\])?)\s+(\w+)\s*\([^)]*\)\s*(?:throws\s+[\w,\s]+)?\s*\{'
         for match in re.finditer(method_pattern, self.source_code):
             method_name = match.group(1)
-            if method_name not in ['if', 'while', 'for', 'switch']:  # 排除关键字
-                # 找到方法所属的类
-                method_line = self.source_code[:match.start()].count('\n') + 1
-                belonging_class = None
-                for class_name, class_info in classes.items():
-                    if method_line > class_info['start_line']:
-                        belonging_class = class_name
-                
+            
+            # 过滤Java关键字和常见的非方法名
+            if method_name in self.java_keywords:
+                continue
+            
+            method_line = self.source_code[:match.start()].count('\n') + 1
+            
+            # 找到方法所属的类
+            belonging_class = None
+            for class_name, class_info in classes.items():
+                if (match.start() > class_info['start_pos'] and 
+                    match.start() < class_info['end_pos']):
+                    belonging_class = class_name
+                    break
+            
+            if belonging_class:  # 只添加属于某个类的方法
                 methods[method_name] = {
                     'name': method_name,
                     'class': belonging_class,
                     'start_line': method_line,
-                    'body_start': match.end()
+                    'body_start': match.end(),
+                    'body_end': self._find_method_end(match.start())
                 }
         
         return {
@@ -137,6 +135,40 @@ class JavaCFG:
             'methods': methods,
             'source_lines': self.source_lines
         }
+    
+    def _find_class_end(self, start_pos: int) -> int:
+        """找到类定义的结束位置"""
+        brace_count = 0
+        in_class = False
+        
+        for i in range(start_pos, len(self.source_code)):
+            char = self.source_code[i]
+            if char == '{':
+                in_class = True
+                brace_count += 1
+            elif char == '}' and in_class:
+                brace_count -= 1
+                if brace_count == 0:
+                    return i
+        
+        return len(self.source_code)
+    
+    def _find_method_end(self, start_pos: int) -> int:
+        """找到方法定义的结束位置"""
+        brace_count = 0
+        in_method = False
+        
+        for i in range(start_pos, len(self.source_code)):
+            char = self.source_code[i]
+            if char == '{':
+                in_method = True
+                brace_count += 1
+            elif char == '}' and in_method:
+                brace_count -= 1
+                if brace_count == 0:
+                    return i
+        
+        return len(self.source_code)
     
     def _parse_all_classes(self) -> Dict[str, Dict]:
         """解析所有类定义"""
@@ -194,11 +226,17 @@ class JavaCFG:
         
         for i, line in enumerate(self.source_lines[start_line - 1:], start=start_line):
             stripped = line.strip()
+            
+            # 跳过空行和注释
+            if not stripped or stripped.startswith('//') or stripped.startswith('/*'):
+                continue
+            
             if not in_method_body and '{' in line:
                 in_method_body = True
                 brace_count += line.count('{') - line.count('}')
-                # 如果开始行有代码，也要包含
-                if stripped.replace('{', '').strip():
+                # 如果开始行有代码（除了{），也要包含
+                content_before_brace = line[:line.index('{')].strip()
+                if content_before_brace and not content_before_brace.endswith(')'):
                     lines.append(line)
                 continue
             
@@ -219,7 +257,7 @@ class JavaCFG:
         i = 0
         while i < len(statements):
             stmt = statements[i].strip()
-            if not stmt or stmt.startswith('//') or stmt.startswith('/*'):
+            if not stmt:
                 i += 1
                 continue
             
@@ -242,9 +280,18 @@ class JavaCFG:
         """处理单个Java语句"""
         stmt = statements[0].strip()
         
+        # 跳过只有大括号的行
+        if stmt in ['{', '}']:
+            return [], 1
+        
         # if语句
         if stmt.startswith('if'):
             return self._process_java_if(statements, visited_methods, method_name, line_number)
+        # else语句（单独的else）
+        elif stmt.startswith('} else if') or stmt.startswith('else if'):
+            return self._process_java_else_if(statements, visited_methods, method_name, line_number)
+        elif stmt.startswith('} else') or stmt.startswith('else'):
+            return self._process_java_else(statements, visited_methods, method_name, line_number)
         # for循环
         elif stmt.startswith('for'):
             return self._process_java_for(statements, visited_methods, method_name, line_number)
@@ -257,9 +304,15 @@ class JavaCFG:
         # switch语句
         elif stmt.startswith('switch'):
             return self._process_java_switch(statements, visited_methods, method_name, line_number)
-        # try-catch语句
+        # try语句
         elif stmt.startswith('try'):
             return self._process_java_try(statements, visited_methods, method_name, line_number)
+        # catch语句
+        elif stmt.startswith('} catch') or stmt.startswith('catch'):
+            return self._process_java_catch(statements, visited_methods, method_name, line_number)
+        # finally语句
+        elif stmt.startswith('} finally') or stmt.startswith('finally'):
+            return self._process_java_finally(statements, visited_methods, method_name, line_number)
         # return语句
         elif stmt.startswith('return'):
             return self._process_java_return(statements, visited_methods, method_name, line_number)
@@ -295,32 +348,41 @@ class JavaCFG:
         
         # 处理if体
         then_statements, then_consumed = self._extract_block_statements(statements[1:])
-        then_blocks = self._process_java_statements(then_statements, visited_methods, method_name)
-        all_blocks.extend(then_blocks)
+        if then_statements:
+            then_blocks = self._process_java_statements(then_statements, visited_methods, method_name)
+            all_blocks.extend(then_blocks)
+        else:
+            then_blocks = []
         consumed_lines += then_consumed
         
-        # 检查是否有else
-        else_blocks = []
-        if (consumed_lines < len(statements) and 
-            statements[consumed_lines].strip().startswith('else')):
-            else_line = statements[consumed_lines].strip()
-            consumed_lines += 1
-            
-            if else_line.startswith('else if'):
-                # else if情况，递归处理
-                else_if_blocks, else_if_consumed = self._process_java_if(
-                    statements[consumed_lines-1:], visited_methods, method_name, line_number + consumed_lines)
-                else_blocks.extend(else_if_blocks)
-                consumed_lines += else_if_consumed - 1
-            else:
-                # 纯else情况
-                else_statements, else_consumed = self._extract_block_statements(statements[consumed_lines:])
-                else_blocks = self._process_java_statements(else_statements, visited_methods, method_name)
-                all_blocks.extend(else_blocks)
-                consumed_lines += else_consumed
-        
         # 建立连接
-        self._connect_java_if_statement(if_block_id, then_blocks, else_blocks, condition)
+        if then_blocks:
+            self._add_connection(if_block_id, then_blocks[0], f'condition_true:{condition}')
+        
+        return all_blocks, consumed_lines
+    
+    def _process_java_else_if(self, statements: List[str], visited_methods: Set[str], 
+                             method_name: str, line_number: int) -> Tuple[List[int], int]:
+        """处理Java else if语句"""
+        # 递归处理as if语句
+        else_if_line = statements[0].strip()
+        # 提取else if中的if部分
+        if_part = else_if_line.replace('} else if', 'if').replace('else if', 'if')
+        modified_statements = [if_part] + statements[1:]
+        return self._process_java_if(modified_statements, visited_methods, method_name, line_number)
+    
+    def _process_java_else(self, statements: List[str], visited_methods: Set[str], 
+                          method_name: str, line_number: int) -> Tuple[List[int], int]:
+        """处理Java else语句"""
+        all_blocks = []
+        consumed_lines = 1  # else行本身
+        
+        # 处理else体
+        else_statements, else_consumed = self._extract_block_statements(statements[1:])
+        if else_statements:
+            else_blocks = self._process_java_statements(else_statements, visited_methods, method_name)
+            all_blocks.extend(else_blocks)
+        consumed_lines += else_consumed
         
         return all_blocks, consumed_lines
     
@@ -350,15 +412,23 @@ class JavaCFG:
         
         # 处理循环体
         body_statements, body_consumed = self._extract_block_statements(statements[1:])
-        body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
-        all_blocks.extend(body_blocks)
+        if body_statements:
+            body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
+            all_blocks.extend(body_blocks)
+            
+            # 建立连接
+            self._add_connection(for_block_id, body_blocks[0], f'condition_true:{condition}')
+            
+            # 循环体回到for头
+            for block_id in body_blocks:
+                block = self.blocks[block_id]
+                if block['type'] not in ['return', 'break', 'continue', 'throw']:
+                    self._add_connection(block_id, for_block_id, 'loop_back')
+        
         consumed_lines += body_consumed
         
         # 弹出循环栈
         self.loop_stack.pop()
-        
-        # 建立连接
-        self._connect_java_for_loop(for_block_id, body_blocks, condition)
         
         return all_blocks, consumed_lines
     
@@ -388,15 +458,23 @@ class JavaCFG:
         
         # 处理循环体
         body_statements, body_consumed = self._extract_block_statements(statements[1:])
-        body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
-        all_blocks.extend(body_blocks)
+        if body_statements:
+            body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
+            all_blocks.extend(body_blocks)
+            
+            # 建立连接
+            self._add_connection(while_block_id, body_blocks[0], f'condition_true:{condition}')
+            
+            # 循环体回到while头
+            for block_id in body_blocks:
+                block = self.blocks[block_id]
+                if block['type'] not in ['return', 'break', 'continue', 'throw']:
+                    self._add_connection(block_id, while_block_id, 'loop_back')
+        
         consumed_lines += body_consumed
         
         # 弹出循环栈
         self.loop_stack.pop()
-        
-        # 建立连接
-        self._connect_java_while_loop(while_block_id, body_blocks, condition)
         
         return all_blocks, consumed_lines
     
@@ -413,23 +491,58 @@ class JavaCFG:
         consumed_lines += 1
         
         # 处理do体
-        body_statements, body_consumed = self._extract_block_statements(statements[1:])
-        body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
-        all_blocks.extend(body_blocks)
+        body_statements, body_consumed = self._extract_do_while_body(statements[1:])
+        if body_statements:
+            body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
+            all_blocks.extend(body_blocks)
+            
+            # do -> 循环体
+            self._add_connection(do_block_id, body_blocks[0], 'sequential')
+        
         consumed_lines += body_consumed
         
         # 处理while条件
-        while_line = statements[consumed_lines].strip()
-        condition = self._extract_condition(while_line)
-        while_block_id = self._create_java_block(while_line, 'while_condition', method_name, 
-                                                line_number + consumed_lines, {'condition': condition})
-        all_blocks.append(while_block_id)
-        consumed_lines += 1
-        
-        # 建立连接
-        self._connect_java_do_while_loop(do_block_id, body_blocks, while_block_id, condition)
+        while_line_index = consumed_lines
+        if while_line_index < len(statements):
+            while_line = statements[while_line_index].strip()
+            if while_line.startswith('} while'):
+                condition = self._extract_condition(while_line)
+                while_block_id = self._create_java_block(while_line, 'while_condition', method_name, 
+                                                        line_number + while_line_index, {'condition': condition})
+                all_blocks.append(while_block_id)
+                consumed_lines += 1
+                
+                # 建立连接
+                if body_statements:
+                    last_body_block = body_blocks[-1] if body_blocks else do_block_id
+                    self._add_connection(last_body_block, while_block_id, 'sequential')
+                    self._add_connection(while_block_id, do_block_id, f'condition_true:{condition}')
         
         return all_blocks, consumed_lines
+    
+    def _extract_do_while_body(self, statements: List[str]) -> Tuple[List[str], int]:
+        """提取do-while循环体"""
+        body_statements = []
+        consumed_lines = 0
+        brace_count = 0
+        
+        for i, line in enumerate(statements):
+            stripped = line.strip()
+            
+            if stripped.startswith('} while'):
+                break
+            
+            # 计算大括号
+            brace_count += line.count('{') - line.count('}')
+            
+            if stripped == '{':
+                consumed_lines += 1
+                continue
+            elif brace_count >= 0:
+                body_statements.append(line)
+                consumed_lines += 1
+        
+        return body_statements, consumed_lines
     
     def _process_java_switch(self, statements: List[str], visited_methods: Set[str], 
                             method_name: str, line_number: int) -> Tuple[List[int], int]:
@@ -448,44 +561,80 @@ class JavaCFG:
         all_blocks.append(switch_block_id)
         consumed_lines += 1
         
-        # 解析case和default块
+        # 解析switch体
+        switch_body, switch_consumed = self._extract_switch_body(statements[1:])
+        consumed_lines += switch_consumed
+        
+        # 处理case和default
         case_blocks = []
-        i = 1
-        while i < len(statements):
-            line = statements[i].strip()
+        i = 0
+        while i < len(switch_body):
+            line = switch_body[i].strip()
             if line.startswith('case') or line.startswith('default'):
                 # 创建case/default块
                 case_block_id = self._create_java_block(line, 'case_statement', method_name, 
-                                                       line_number + i)
+                                                       line_number + consumed_lines + i)
                 all_blocks.append(case_block_id)
                 case_blocks.append((case_block_id, line))
-                consumed_lines += 1
                 i += 1
                 
                 # 处理case体
                 case_statements = []
-                while i < len(statements) and not statements[i].strip().startswith(('case', 'default', '}')):
-                    case_statements.append(statements[i])
+                while i < len(switch_body):
+                    case_line = switch_body[i].strip()
+                    if case_line.startswith(('case', 'default')):
+                        break
+                    if case_line and case_line != '}':
+                        case_statements.append(switch_body[i])
                     i += 1
                 
                 if case_statements:
                     case_body_blocks = self._process_java_statements(case_statements, visited_methods, method_name)
                     all_blocks.extend(case_body_blocks)
-                    consumed_lines += len(case_statements)
-            elif line == '}':
-                consumed_lines += 1
-                break
+                    
+                    # case -> case体
+                    if case_body_blocks:
+                        self._add_connection(case_block_id, case_body_blocks[0], 'sequential')
             else:
                 i += 1
         
-        # 建立连接
-        self._connect_java_switch_statement(switch_block_id, case_blocks, condition)
+        # 建立switch连接
+        for case_block_id, case_line in case_blocks:
+            if case_line.startswith('case'):
+                case_value = case_line.split()[1].rstrip(':')
+                self._add_connection(switch_block_id, case_block_id, f'case_match:{case_value}')
+            elif case_line.startswith('default'):
+                self._add_connection(switch_block_id, case_block_id, 'default_case')
         
         return all_blocks, consumed_lines
     
+    def _extract_switch_body(self, statements: List[str]) -> Tuple[List[str], int]:
+        """提取switch体"""
+        body_statements = []
+        consumed_lines = 0
+        brace_count = 0
+        
+        for i, line in enumerate(statements):
+            stripped = line.strip()
+            
+            # 计算大括号
+            brace_count += line.count('{') - line.count('}')
+            
+            if stripped == '{':
+                consumed_lines += 1
+                continue
+            elif stripped == '}' and brace_count == 0:
+                consumed_lines += 1
+                break
+            elif brace_count > 0:
+                body_statements.append(line)
+                consumed_lines += 1
+        
+        return body_statements, consumed_lines
+    
     def _process_java_try(self, statements: List[str], visited_methods: Set[str], 
                          method_name: str, line_number: int) -> Tuple[List[int], int]:
-        """处理Java try-catch语句"""
+        """处理Java try语句"""
         all_blocks = []
         consumed_lines = 0
         
@@ -497,46 +646,65 @@ class JavaCFG:
         
         # 处理try体
         try_statements, try_consumed = self._extract_block_statements(statements[1:])
-        try_blocks = self._process_java_statements(try_statements, visited_methods, method_name)
-        all_blocks.extend(try_blocks)
+        if try_statements:
+            try_blocks = self._process_java_statements(try_statements, visited_methods, method_name)
+            all_blocks.extend(try_blocks)
+            
+            # try -> try体
+            if try_blocks:
+                self._add_connection(try_block_id, try_blocks[0], 'sequential')
+        
         consumed_lines += try_consumed
         
-        # 处理catch块
-        catch_blocks = []
-        while (consumed_lines < len(statements) and 
-               statements[consumed_lines].strip().startswith('catch')):
-            catch_line = statements[consumed_lines].strip()
-            catch_block_id = self._create_java_block(catch_line, 'catch_statement', method_name, 
-                                                    line_number + consumed_lines)
-            all_blocks.append(catch_block_id)
-            consumed_lines += 1
-            
-            # 处理catch体
-            catch_statements, catch_consumed = self._extract_block_statements(statements[consumed_lines:])
-            catch_body_blocks = self._process_java_statements(catch_statements, visited_methods, method_name)
-            all_blocks.extend(catch_body_blocks)
-            catch_blocks.append([catch_block_id] + catch_body_blocks)
-            consumed_lines += catch_consumed
+        return all_blocks, consumed_lines
+    
+    def _process_java_catch(self, statements: List[str], visited_methods: Set[str], 
+                           method_name: str, line_number: int) -> Tuple[List[int], int]:
+        """处理Java catch语句"""
+        all_blocks = []
+        consumed_lines = 0
         
-        # 处理finally块
-        finally_blocks = []
-        if (consumed_lines < len(statements) and 
-            statements[consumed_lines].strip().startswith('finally')):
-            finally_line = statements[consumed_lines].strip()
-            finally_block_id = self._create_java_block(finally_line, 'finally_statement', method_name, 
-                                                      line_number + consumed_lines)
-            all_blocks.append(finally_block_id)
-            consumed_lines += 1
-            
-            # 处理finally体
-            finally_statements, finally_consumed = self._extract_block_statements(statements[consumed_lines:])
-            finally_body_blocks = self._process_java_statements(finally_statements, visited_methods, method_name)
-            all_blocks.extend(finally_body_blocks)
-            finally_blocks = [finally_block_id] + finally_body_blocks
-            consumed_lines += finally_consumed
+        catch_line = statements[0].strip()
+        catch_block_id = self._create_java_block(catch_line, 'catch_statement', method_name, line_number)
+        all_blocks.append(catch_block_id)
+        consumed_lines += 1
         
-        # 建立连接
-        self._connect_java_try_statement(try_blocks, catch_blocks, finally_blocks)
+        # 处理catch体
+        catch_statements, catch_consumed = self._extract_block_statements(statements[1:])
+        if catch_statements:
+            catch_blocks = self._process_java_statements(catch_statements, visited_methods, method_name)
+            all_blocks.extend(catch_blocks)
+            
+            # catch -> catch体
+            if catch_blocks:
+                self._add_connection(catch_block_id, catch_blocks[0], 'sequential')
+        
+        consumed_lines += catch_consumed
+        
+        return all_blocks, consumed_lines
+    
+    def _process_java_finally(self, statements: List[str], visited_methods: Set[str], 
+                             method_name: str, line_number: int) -> Tuple[List[int], int]:
+        """处理Java finally语句"""
+        all_blocks = []
+        consumed_lines = 0
+        
+        finally_line = statements[0].strip()
+        finally_block_id = self._create_java_block(finally_line, 'finally_statement', method_name, line_number)
+        all_blocks.append(finally_block_id)
+        consumed_lines += 1
+        
+        # 处理finally体
+        finally_statements, finally_consumed = self._extract_block_statements(statements[1:])
+        if finally_statements:
+            finally_blocks = self._process_java_statements(finally_statements, visited_methods, method_name)
+            all_blocks.extend(finally_blocks)
+            
+            # finally -> finally体
+            if finally_blocks:
+                self._add_connection(finally_block_id, finally_blocks[0], 'sequential')
+        
+        consumed_lines += finally_consumed
         
         return all_blocks, consumed_lines
     
@@ -578,7 +746,9 @@ class JavaCFG:
                                 method_name: str, line_number: int) -> Tuple[List[int], int]:
         """处理Java赋值或表达式语句"""
         # 检测语句类型
-        if '=' in stmt and not any(op in stmt for op in ['==', '!=', '<=', '>=']):
+        if ('=' in stmt and 
+            not any(op in stmt for op in ['==', '!=', '<=', '>=', '++', '--']) and
+            not stmt.strip().endswith(';')):
             block_type = 'assignment'
         else:
             block_type = 'expression'
@@ -594,7 +764,7 @@ class JavaCFG:
         block_info = {
             'id': block_id,
             'type': block_type,
-            'code': code,
+            'code': code.strip(),
             'line_number': line_number,
             'method': method_name,
             'method_calls': self._extract_java_method_calls(code)
@@ -609,8 +779,6 @@ class JavaCFG:
     
     def _extract_condition(self, line: str) -> str:
         """提取条件表达式"""
-        import re
-        
         # 匹配括号内的条件
         match = re.search(r'\(([^)]+)\)', line)
         if match:
@@ -622,6 +790,7 @@ class JavaCFG:
         block_statements = []
         consumed_lines = 0
         brace_count = 0
+        found_opening_brace = False
         
         for i, line in enumerate(statements):
             stripped = line.strip()
@@ -630,15 +799,16 @@ class JavaCFG:
             brace_count += line.count('{') - line.count('}')
             
             if stripped == '{':
+                found_opening_brace = True
                 consumed_lines += 1
                 continue
-            elif stripped == '}' and brace_count == 0:
+            elif stripped == '}' and brace_count == 0 and found_opening_brace:
                 consumed_lines += 1
                 break
-            elif brace_count > 0:
+            elif found_opening_brace and brace_count > 0:
                 block_statements.append(line)
                 consumed_lines += 1
-            elif brace_count == 0 and i == 0:
+            elif not found_opening_brace and i == 0:
                 # 单行语句（没有大括号）
                 block_statements.append(line)
                 consumed_lines += 1
@@ -648,7 +818,6 @@ class JavaCFG:
     
     def _extract_java_method_calls(self, code: str) -> List[str]:
         """提取Java代码中的方法调用"""
-        import re
         method_calls = []
         
         # 匹配方法调用模式 methodName(...)
@@ -656,7 +825,10 @@ class JavaCFG:
         matches = re.findall(pattern, code)
         
         for match in matches:
-            if match in self.all_methods:
+            # 排除Java关键字和常见非方法名
+            if (match in self.all_methods and 
+                match not in self.java_keywords and
+                match not in ['System', 'out', 'println', 'print', 'length']):
                 method_calls.append(match)
         
         return list(set(method_calls))  # 去重
@@ -683,90 +855,8 @@ class JavaCFG:
             next_block = self.blocks[block_ids[i + 1]]
             
             # 跳过控制结构块和不应该有顺序连接的块
-            if current_block['type'] not in ['return', 'break', 'continue', 'throw', 
-                                           'for_statement', 'while_statement', 'if_statement', 
-                                           'switch_statement', 'case_statement']:
+            if current_block['type'] not in ['return', 'break', 'continue', 'throw']:
                 self._add_connection(block_ids[i], block_ids[i + 1], 'sequential')
-    
-    def _connect_java_if_statement(self, if_block_id: int, then_blocks: List[int], 
-                                  else_blocks: List[int], condition: str):
-        """建立Java if语句的连接"""
-        # if -> then分支
-        if then_blocks:
-            self._add_connection(if_block_id, then_blocks[0], f'condition_true:{condition}')
-        
-        # if -> else分支
-        if else_blocks:
-            self._add_connection(if_block_id, else_blocks[0], f'condition_false:{condition}')
-    
-    def _connect_java_for_loop(self, for_block_id: int, body_blocks: List[int], condition: str):
-        """建立Java for循环的连接"""
-        # for -> 循环体
-        if body_blocks:
-            self._add_connection(for_block_id, body_blocks[0], f'condition_true:{condition}')
-            
-            # 循环体最后的块 -> for头（循环回去）
-            for block_id in body_blocks:
-                block = self.blocks[block_id]
-                if block['type'] not in ['return', 'break', 'continue', 'throw']:
-                    self._add_connection(block_id, for_block_id, 'loop_back')
-    
-    def _connect_java_while_loop(self, while_block_id: int, body_blocks: List[int], condition: str):
-        """建立Java while循环的连接"""
-        # while -> 循环体
-        if body_blocks:
-            self._add_connection(while_block_id, body_blocks[0], f'condition_true:{condition}')
-            
-            # 循环体最后的块 -> while头（循环回去）
-            for block_id in body_blocks:
-                block = self.blocks[block_id]
-                if block['type'] not in ['return', 'break', 'continue', 'throw']:
-                    self._add_connection(block_id, while_block_id, 'loop_back')
-    
-    def _connect_java_do_while_loop(self, do_block_id: int, body_blocks: List[int], 
-                                   while_block_id: int, condition: str):
-        """建立Java do-while循环的连接"""
-        # do -> 循环体
-        if body_blocks:
-            self._add_connection(do_block_id, body_blocks[0], 'sequential')
-            
-            # 循环体 -> while条件
-            last_body_block = body_blocks[-1] if body_blocks else do_block_id
-            self._add_connection(last_body_block, while_block_id, 'sequential')
-            
-            # while条件为真 -> do头（循环回去）
-            self._add_connection(while_block_id, do_block_id, f'condition_true:{condition}')
-    
-    def _connect_java_switch_statement(self, switch_block_id: int, case_blocks: List[Tuple[int, str]], condition: str):
-        """建立Java switch语句的连接"""
-        for case_block_id, case_line in case_blocks:
-            if case_line.startswith('case'):
-                case_value = case_line.split()[1].rstrip(':')
-                self._add_connection(switch_block_id, case_block_id, f'case_match:{case_value}')
-            elif case_line.startswith('default'):
-                self._add_connection(switch_block_id, case_block_id, 'default_case')
-    
-    def _connect_java_try_statement(self, try_blocks: List[int], catch_blocks: List[List[int]], 
-                                   finally_blocks: List[int]):
-        """建立Java try-catch语句的连接"""
-        # try块到catch块的连接（异常发生时）
-        for try_block_id in try_blocks:
-            for catch_block_list in catch_blocks:
-                if catch_block_list:
-                    self._add_connection(try_block_id, catch_block_list[0], 'exception')
-        
-        # 到finally块的连接
-        if finally_blocks:
-            # try块正常完成时到finally
-            if try_blocks:
-                last_try_block = try_blocks[-1]
-                self._add_connection(last_try_block, finally_blocks[0], 'finally')
-            
-            # catch块完成时到finally
-            for catch_block_list in catch_blocks:
-                if catch_block_list:
-                    last_catch_block = catch_block_list[-1]
-                    self._add_connection(last_catch_block, finally_blocks[0], 'finally')
     
     def _add_java_control_structure_connections(self):
         """添加Java控制结构的额外连接"""
@@ -784,18 +874,35 @@ class JavaCFG:
     
     def _find_loop_exit_target(self, loop_info: Dict) -> Optional[int]:
         """找到循环的退出目标"""
-        # 简化实现：找到循环后的第一个块
-        loop_line = loop_info.get('line', '')
-        if not loop_line:
+        # 找到循环后的第一个块
+        loop_header_id = loop_info.get('header_id')
+        if loop_header_id is None:
             return None
         
-        # 找到循环行号后的第一个非循环块
+        loop_block = self.blocks[loop_header_id]
+        loop_method = loop_block['method']
+        
+        # 找到同一方法内循环后的第一个非循环相关块
         for block in self.blocks:
-            if (block['line_number'] > loop_info.get('header_id', 0) and
-                block['type'] not in ['break', 'continue']):
+            if (block['method'] == loop_method and 
+                block['id'] > loop_header_id and
+                block['type'] not in ['break', 'continue'] and
+                not self._is_block_in_loop(block, loop_info)):
                 return block['id']
         
         return None
+    
+    def _is_block_in_loop(self, block: Dict, loop_info: Dict) -> bool:
+        """检查块是否在指定循环内"""
+        # 简化判断：通过块ID范围判断
+        loop_header_id = loop_info.get('header_id')
+        if loop_header_id is None:
+            return False
+        
+        # 如果块的方法与循环头的方法相同，且ID在合理范围内
+        return (block['method'] == self.blocks[loop_header_id]['method'] and
+                block['id'] > loop_header_id and
+                block['id'] < loop_header_id + 50)  # 假设循环不会超过50个块
     
     def _add_java_method_call_connections(self):
         """添加Java方法调用连接"""
@@ -934,7 +1041,7 @@ class JavaCFG:
     
     def print_features(self):
         """打印CFG特征信息"""
-        logger.info("=================Java Method CFG=================")
+        logger.info("=================Improved Java Method CFG=================")
         logger.info(f"目标类: {self.target_class}")
         logger.info(f"目标方法: {self.target_method}")
         logger.info(f"方法签名: {self.method_signature}")
@@ -952,12 +1059,12 @@ class JavaCFG:
             logger.info(f"  {conn['from']} --{conn['type']}--> {conn['to']}")
         
         logger.info(f"CFG文本表示:\n{self.cfg_text}")
-        logger.info("=================Java Method CFG=================")
+        logger.info("=================Improved Java Method CFG=================")
 
 
 # 测试函数
-def test_java_cfg():
-    """测试Java CFG构建器"""
+def test_improved_java_cfg():
+    """测试改进的Java CFG构建器"""
     test_code = '''
 public class TestClass {
     
@@ -1001,12 +1108,12 @@ public class TestClass {
 '''
     
     # 写入测试文件
-    test_file = "TestClass.java"
+    test_file = "TestClassImproved.java"
     with open(test_file, 'w', encoding='utf-8') as f:
         f.write(test_code)
     
     try:
-        # 测试Java CFG构建器
+        # 测试改进的Java CFG构建器
         cfg = JavaCFG(test_file, "mainMethod", "TestClass")
         cfg.print_features()
         
@@ -1021,4 +1128,4 @@ public class TestClass {
 
 
 if __name__ == "__main__":
-    test_java_cfg() 
+    test_improved_java_cfg() 
