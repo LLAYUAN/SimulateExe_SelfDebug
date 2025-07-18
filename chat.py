@@ -469,3 +469,75 @@ IMPORTANT: Keep your total response under token limit to avoid truncation. If th
             "error": str(e)
         }
         return json.dumps(error_response, indent=2, ensure_ascii=False)
+
+def chat_java_fragment_debug(buggy_code: str, error_message: str, test_case: str, cfg_text: str = "") -> str:
+    """
+    专门用于Java代码片段调试的函数，基于静态分析而非逐行执行
+    
+    Args:
+        buggy_code: 有问题的Java代码片段
+        error_message: 错误信息
+        test_case: 测试用例
+        cfg_text: 控制流图文本
+    
+    Returns:
+        JSON格式的调试结果
+    """
+    
+    system_prompt = "You are a professional Java code debugging expert. You need to analyze bugs in code fragments and provide fix solutions."
+
+    user_prompt = f"""Please analyze the bug in the following Java code fragment step by step following the CFG and give the fix solution.
+
+**Code Fragment**:
+```java
+{buggy_code}
+```
+
+**Error Message**:
+{error_message}
+
+**Test Case**:
+{test_case}
+
+**Control Flow Graph**: 
+{cfg_text}
+
+Please return results in JSON format with the following fields:
+{{
+    "analysis step by step": {{
+        ...
+    }},
+    "error_analysis": {{    
+        "error_type": "Error type analysis",
+        "error_location": "Location where error occurs",
+        "trigger_condition": "Condition that triggers the error"
+    }},  
+    "corrected_code": "Complete corrected code",
+    "explanation": "Explanation of the fix principle"
+}}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.1,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        error_response = {
+            "analysis": {
+                "analysis_failed": f"Analysis process failed: {str(e)}",
+            },
+            "error_analysis": {
+                "error_type": "system_error",
+                "error_location": "analysis_function",
+                "trigger_condition": "api_call_failed"
+            },
+            "corrected_code": buggy_code,
+            "explanation": f"Automatic analysis failed: {str(e)}"
+        }
+        return json.dumps(error_response, ensure_ascii=False)

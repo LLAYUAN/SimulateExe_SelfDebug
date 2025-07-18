@@ -19,9 +19,13 @@ class JavaCFG:
             target_method: 目标方法名（不包含参数），如果不指定则使用第一个方法
             target_class: 目标类名，如果不指定则使用第一个类
         """
+        # #logger.info(f"🚀🚀🚀 JavaCFG.__init__ called with source_path={source_path}")
+        
         self.source_path = source_path
         self.source_code = Path(source_path).read_text(encoding='utf-8')
         self.source_lines = self.source_code.splitlines()
+        
+        # #logger.info(f"📖 Read {len(self.source_lines)} lines from Java file")
         
         # Java关键字集合
         self.java_keywords = {
@@ -62,8 +66,8 @@ class JavaCFG:
         if not self.target_method:
             raise ValueError("未找到任何方法定义")
             
-        logger.info(f"目标类: {self.target_class}")
-        logger.info(f"目标方法: {self.target_method}")
+        # #logger.info(f"目标类: {self.target_class}")
+        # #logger.info(f"目标方法: {self.target_method}")
         
         # 构建CFG
         self.blocks = []
@@ -188,32 +192,108 @@ class JavaCFG:
     
     def _build_complete_cfg(self):
         """构建完整的CFG"""
+        # #logger.info("🏗️🏗️🏗️ Building complete CFG...")
         visited_methods = set()
         self._build_method_cfg(self.target_method, visited_methods)
+        
+        # #logger.info(f"📊 Total blocks created: {len(self.blocks)}")
+        # #logger.info(f"📊 Total connections before control structures: {len(self.connections)}")
+        
+        # 在所有方法处理完后，统一添加控制结构连接
+        # #logger.info("🔗 Adding control structure connections...")
+        self._add_java_control_structure_connections()
+        
+        # #logger.info(f"📊 Total connections after control structures: {len(self.connections)}")
     
     def _build_method_cfg(self, method_name: str, visited_methods: Set[str]):
         """递归构建方法的CFG"""
         if method_name in visited_methods:
-            logger.warning(f"检测到递归调用: {method_name}")
+            # #logger.warning(f"检测到递归调用: {method_name}")
             return
             
         if method_name not in self.all_methods:
-            logger.warning(f"方法 {method_name} 未找到定义，跳过")
+            # #logger.warning(f"方法 {method_name} 未找到定义，跳过")
             return
             
         visited_methods.add(method_name)
         method_info = self.all_methods[method_name]
         
-        logger.info(f"处理方法: {method_name}")
+        # #logger.info(f"🏗️ 处理方法: {method_name}")
+        # #logger.info(f"📋 Method info keys: {list(method_info.keys())}")
+        # #logger.info(f"📋 Method info: body_start={method_info['body_start']}, body_end={method_info['body_end']}")
+        
+        # 从源代码中提取方法体语句
+        body_start = method_info['body_start']
+        body_end = method_info['body_end']
+        method_body = self.source_code[body_start:body_end]
+        
+        # #logger.info(f"📝 Method body content: {method_body[:200]}...")
+        
+        # 将方法体分解为语句
+        statements = self._extract_statements_from_body(method_body)
+        # #logger.info(f"📋 方法 {method_name} 包含 {len(statements)} 个语句")
+        
+        # 显示前几个语句
+        # for i, stmt in enumerate(statements[:10]):
+        #     #logger.info(f"📝 语句 {i}: '{stmt.strip()}'")
         
         # 解析方法体
-        method_body = self._extract_method_body(method_info)
-        main_blocks = self._process_java_statements(method_body, visited_methods, method_name)
+        main_blocks = self._process_java_statements(statements, visited_methods, method_name)
         
         # 处理方法调用
         self._process_method_calls_in_blocks(visited_methods)
         
         visited_methods.remove(method_name)
+    
+    def _extract_statements_from_body(self, method_body: str) -> List[str]:
+        """从方法体字符串中提取语句"""
+        # #logger.info(f"🔍 Extracting statements from method body...")
+        
+        # 去掉开头和结尾的大括号
+        method_body = method_body.strip()
+        if method_body.startswith('{'):
+            method_body = method_body[1:]
+        if method_body.endswith('}'):
+            method_body = method_body[:-1]
+        
+        # 按行分割
+        lines = method_body.split('\n')
+        statements = []
+        
+        current_statement = ""
+        brace_count = 0
+        
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('//') or line.startswith('/*') or line.startswith('*'):
+                continue
+            
+            # 计算大括号
+            brace_count += line.count('{') - line.count('}')
+            
+            # 添加到当前语句
+            if current_statement:
+                current_statement += " " + line
+            else:
+                current_statement = line
+            
+            # 如果遇到分号且不在大括号内，则结束当前语句
+            if (line.endswith(';') or line.endswith('{')) and brace_count >= 0:
+                statements.append(current_statement)
+                current_statement = ""
+            # 如果遇到单独的右大括号，也结束语句
+            elif line == '}' and brace_count >= 0:
+                if current_statement:
+                    statements.append(current_statement)
+                    current_statement = ""
+        
+        # 处理最后一个语句
+        if current_statement:
+            statements.append(current_statement)
+        
+        # #logger.info(f"✅ Extracted {len(statements)} statements")
+        return statements
+
     
     def _extract_method_body(self, method_info: Dict) -> List[str]:
         """提取方法体的语句"""
@@ -269,9 +349,6 @@ class JavaCFG:
         
         # 建立顺序连接
         self._connect_sequential_blocks(block_ids)
-        
-        # 添加控制结构连接
-        self._add_java_control_structure_connections()
         
         return block_ids
     
@@ -341,23 +418,26 @@ class JavaCFG:
         
         # 创建if块
         if_block_id = self._create_java_block(if_line, 'if_statement', method_name, line_number, {
-            'condition': condition
+            'condition': condition,
+            'is_control_structure': True  # 标记为控制结构，避免sequential连接
         })
         all_blocks.append(if_block_id)
         consumed_lines += 1
         
         # 处理if体
         then_statements, then_consumed = self._extract_block_statements(statements[1:])
+        then_blocks = []
         if then_statements:
             then_blocks = self._process_java_statements(then_statements, visited_methods, method_name)
             all_blocks.extend(then_blocks)
-        else:
-            then_blocks = []
         consumed_lines += then_consumed
         
-        # 建立连接
+        # 建立连接 - 只创建condition_true连接，condition_false将在_add_control_structure_connections中处理
         if then_blocks:
             self._add_connection(if_block_id, then_blocks[0], f'condition_true:{condition}')
+        
+        # 存储if块信息供后续处理condition_false连接
+        self.blocks[if_block_id]['then_blocks'] = then_blocks
         
         return all_blocks, consumed_lines
     
@@ -388,20 +468,20 @@ class JavaCFG:
     
     def _process_java_for(self, statements: List[str], visited_methods: Set[str], 
                          method_name: str, line_number: int) -> Tuple[List[int], int]:
-        """处理Java for循环"""
+        """处理Java for循环（参考Python CFG builder思路）"""
         all_blocks = []
-        consumed_lines = 0
         
-        # 解析for语句
+        # 1. 创建for循环头部块
         for_line = statements[0].strip()
         condition = self._extract_condition(for_line)
         
-        # 创建for块
         for_block_id = self._create_java_block(for_line, 'for_statement', method_name, line_number, {
-            'condition': condition
+            'condition': condition,
+            'is_control_structure': True
         })
         all_blocks.append(for_block_id)
-        consumed_lines += 1
+        
+        # #logger.info(f"🔄 Created for loop header block {for_block_id}: '{for_line}'")
         
         # 将for循环推入栈
         self.loop_stack.append({
@@ -410,27 +490,93 @@ class JavaCFG:
             'line': for_line
         })
         
-        # 处理循环体
-        body_statements, body_consumed = self._extract_block_statements(statements[1:])
+        # 2. 提取循环体语句
+        body_statements, body_consumed = self._extract_java_for_body(statements)
+        # #logger.info(f"📋 Extracted {len(body_statements)} body statements")
+        
+        # 3. 处理循环体语句
+        body_blocks = []
         if body_statements:
             body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
             all_blocks.extend(body_blocks)
-            
-            # 建立连接
-            self._add_connection(for_block_id, body_blocks[0], f'condition_true:{condition}')
-            
-            # 循环体回到for头
-            for block_id in body_blocks:
-                block = self.blocks[block_id]
-                if block['type'] not in ['return', 'break', 'continue', 'throw']:
-                    self._add_connection(block_id, for_block_id, 'loop_back')
+            # #logger.info(f"🔗 Created {len(body_blocks)} body blocks: {body_blocks}")
         
-        consumed_lines += body_consumed
+        # 4. 建立连接（参考Python CFG思路）
+        self._connect_java_for_loop(for_block_id, body_blocks, condition)
+        
+        # 存储for块信息
+        self.blocks[for_block_id]['body_blocks'] = body_blocks
         
         # 弹出循环栈
         self.loop_stack.pop()
         
+        consumed_lines = 1 + body_consumed  # for头 + 循环体
         return all_blocks, consumed_lines
+    
+    def _extract_java_for_body(self, statements: List[str]) -> Tuple[List[str], int]:
+        """提取Java for循环体语句"""
+        # #logger.info(f"🔍 Extracting for body from {len(statements)} total statements")
+        # #logger.info(f"📝 Available statements: {[s.strip() for s in statements[:5]]}")
+        
+        for_header = statements[0].strip()
+        
+        # 如果for头包含开大括号，从后续语句中提取循环体
+        if '{' in for_header:
+            body_statements = []
+            brace_count = for_header.count('{') - for_header.count('}')
+            consumed_lines = 0
+            
+            # #logger.info(f"🔢 Initial brace_count from header: {brace_count}")
+            
+            # 从第二行开始提取循环体
+            i = 1
+            while i < len(statements) and brace_count > 0:
+                stmt = statements[i]
+                stmt_stripped = stmt.strip()
+                
+                # #logger.debug(f"🔍 Processing statement {i}: '{stmt_stripped}' (brace_count: {brace_count})")
+                
+                if not stmt_stripped:
+                    i += 1
+                    consumed_lines += 1
+                    continue
+                
+                # 计算大括号
+                open_braces = stmt.count('{')
+                close_braces = stmt.count('}')
+                brace_count += open_braces - close_braces
+                
+                #logger.debug(f"🔢 Statement {i}: +{open_braces} -{close_braces} = {brace_count}")
+                
+                if brace_count > 0:
+                    body_statements.append(stmt)
+                    #logger.info(f"📋 Added body statement: '{stmt_stripped}'")
+                elif brace_count == 0 and stmt_stripped == '}':
+                    #logger.info(f"✅ Found closing brace, ending body extraction")
+                    consumed_lines += 1
+                    break
+                
+                i += 1
+                consumed_lines += 1
+            
+            #logger.info(f"✅ Extracted {len(body_statements)} for body statements")
+            return body_statements, consumed_lines
+        else:
+            # for头没有大括号，可能是单行循环
+            #logger.info(f"🔄 For header has no brace, using _extract_block_statements")
+            body_statements, body_consumed = self._extract_block_statements(statements[1:])
+            return body_statements, body_consumed
+    
+    def _connect_java_for_loop(self, for_block_id: int, body_blocks: List[int], condition: str):
+        """建立Java for循环的连接（参考Python CFG思路）"""
+        # for -> 循环体（condition_true）
+        if body_blocks:
+            #logger.info(f"🔗 Creating for_match connection: {for_block_id} -> {body_blocks[0]}")
+            self._add_connection(for_block_id, body_blocks[0], f'condition_true:{condition}')
+        
+        # condition_false连接会在后续的_add_loop_condition_false_connections中处理
+    
+
     
     def _process_java_while(self, statements: List[str], visited_methods: Set[str], 
                            method_name: str, line_number: int) -> Tuple[List[int], int]:
@@ -444,7 +590,8 @@ class JavaCFG:
         
         # 创建while块
         while_block_id = self._create_java_block(while_line, 'while_statement', method_name, line_number, {
-            'condition': condition
+            'condition': condition,
+            'is_control_structure': True  # 标记为控制结构，避免sequential连接
         })
         all_blocks.append(while_block_id)
         consumed_lines += 1
@@ -458,20 +605,21 @@ class JavaCFG:
         
         # 处理循环体
         body_statements, body_consumed = self._extract_block_statements(statements[1:])
+        body_blocks = []
         if body_statements:
             body_blocks = self._process_java_statements(body_statements, visited_methods, method_name)
             all_blocks.extend(body_blocks)
             
-            # 建立连接
+            # 建立连接 - condition_true进入循环体
             self._add_connection(while_block_id, body_blocks[0], f'condition_true:{condition}')
-            
-            # 循环体回到while头
-            for block_id in body_blocks:
-                block = self.blocks[block_id]
-                if block['type'] not in ['return', 'break', 'continue', 'throw']:
-                    self._add_connection(block_id, while_block_id, 'loop_back')
         
         consumed_lines += body_consumed
+        
+        # 存储while块信息供后续处理condition_false连接
+        self.blocks[while_block_id]['body_blocks'] = body_blocks
+        # 确保while循环块不会被误认为是if块
+        if 'then_blocks' in self.blocks[while_block_id]:
+            del self.blocks[while_block_id]['then_blocks']
         
         # 弹出循环栈
         self.loop_stack.pop()
@@ -779,18 +927,34 @@ class JavaCFG:
     
     def _extract_condition(self, line: str) -> str:
         """提取条件表达式"""
-        # 匹配括号内的条件
-        match = re.search(r'\(([^)]+)\)', line)
-        if match:
-            return match.group(1)
+        # 匹配完整的条件表达式，处理嵌套括号
+        if '(' in line and ')' in line:
+            start = line.find('(')
+            if start != -1:
+                # 找到匹配的右括号，处理嵌套括号
+                paren_count = 0
+                end = start
+                for i in range(start, len(line)):
+                    if line[i] == '(':
+                        paren_count += 1
+                    elif line[i] == ')':
+                        paren_count -= 1
+                        if paren_count == 0:
+                            end = i
+                            break
+                
+                if end > start:
+                    return line[start+1:end]
         return ""
     
     def _extract_block_statements(self, statements: List[str]) -> Tuple[List[str], int]:
-        """提取块语句（处理大括号）"""
+        """提取块语句（处理大括号），正确处理控制结构"""
         block_statements = []
         consumed_lines = 0
         brace_count = 0
         found_opening_brace = False
+        
+        #logger.debug(f"Extracting block from {len(statements)} statements: {[s.strip() for s in statements[:3]]}")
         
         for i, line in enumerate(statements):
             stripped = line.strip()
@@ -801,20 +965,72 @@ class JavaCFG:
             if stripped == '{':
                 found_opening_brace = True
                 consumed_lines += 1
+                #logger.debug(f"Found opening brace at line {i}")
                 continue
             elif stripped == '}' and brace_count == 0 and found_opening_brace:
                 consumed_lines += 1
+                #logger.debug(f"Found closing brace at line {i}, ending block")
                 break
             elif found_opening_brace and brace_count > 0:
                 block_statements.append(line)
                 consumed_lines += 1
+                #logger.debug(f"Added block statement: {stripped}")
             elif not found_opening_brace and i == 0:
-                # 单行语句（没有大括号）
-                block_statements.append(line)
-                consumed_lines += 1
-                break
+                # 检查第一行是否是控制结构（如for循环头）
+                if (stripped.startswith('for ') or stripped.startswith('while ') or 
+                    stripped.startswith('if ') or stripped.startswith('switch ')):
+                    # 这是控制结构，需要提取整个结构
+                    #logger.debug(f"Found control structure: {stripped}")
+                    return self._extract_control_structure_block(statements)
+                else:
+                    # 真正的单行语句
+                    block_statements.append(line)
+                    consumed_lines += 1
+                    #logger.debug(f"Single statement block: {stripped}")
+                    break
         
+        #logger.debug(f"Extracted {len(block_statements)} statements, consumed {consumed_lines} lines")
         return block_statements, consumed_lines
+    
+    def _extract_control_structure_block(self, statements: List[str]) -> Tuple[List[str], int]:
+        """提取控制结构块（如for循环的整体）"""
+        #logger.debug(f"Extracting control structure from {len(statements)} statements")
+        
+        control_header = statements[0].strip()
+        #logger.debug(f"Control header: {control_header}")
+        
+        # 如果控制结构头包含开大括号，需要找到对应的闭大括号
+        if '{' in control_header:
+            brace_count = control_header.count('{') - control_header.count('}')
+            consumed_lines = 1
+            structure_statements = [statements[0]]  # 包含头部
+            
+            # 继续提取直到大括号平衡
+            i = 1
+            while i < len(statements) and brace_count > 0:
+                line = statements[i]
+                stripped = line.strip()
+                
+                if not stripped:
+                    i += 1
+                    consumed_lines += 1
+                    continue
+                
+                brace_count += line.count('{') - line.count('}')
+                structure_statements.append(line)
+                consumed_lines += 1
+                
+                if brace_count == 0:
+                    #logger.debug(f"Control structure closed at line {i}")
+                    break
+                
+                i += 1
+            
+            #logger.debug(f"Extracted control structure with {len(structure_statements)} statements")
+            return structure_statements, consumed_lines
+        else:
+            # 控制结构头没有大括号，只返回头部
+            return [statements[0]], 1
     
     def _extract_java_method_calls(self, code: str) -> List[str]:
         """提取Java代码中的方法调用"""
@@ -855,11 +1071,22 @@ class JavaCFG:
             next_block = self.blocks[block_ids[i + 1]]
             
             # 跳过控制结构块和不应该有顺序连接的块
-            if current_block['type'] not in ['return', 'break', 'continue', 'throw']:
+            if (current_block['type'] not in ['return', 'break', 'continue', 'throw'] and
+                not current_block.get('is_control_structure', False)):
+                #logger.debug(f"Adding sequential connection: {block_ids[i]} -> {block_ids[i + 1]}")
                 self._add_connection(block_ids[i], block_ids[i + 1], 'sequential')
     
     def _add_java_control_structure_connections(self):
         """添加Java控制结构的额外连接"""
+        # 处理if语句的condition_false连接
+        self._add_if_condition_false_connections()
+        
+        # 处理循环的condition_false连接
+        self._add_loop_condition_false_connections()
+        
+        # 添加循环的loop_back连接
+        self._add_java_loop_back_connections()
+        
         # 处理break语句的跳出连接
         for block in self.blocks:
             if block['type'] == 'break' and 'break_target' in block:
@@ -871,6 +1098,352 @@ class JavaCFG:
         
         # 处理方法调用连接
         self._add_java_method_call_connections()
+        
+        # 移除与loop_back连接冲突的sequential连接
+        self._remove_conflicting_sequential_connections()
+    
+    def _remove_conflicting_sequential_connections(self):
+        """移除与loop_back连接冲突的sequential连接"""
+        # 找到所有有loop_back连接的块
+        blocks_with_loop_back = set()
+        for conn in self.connections:
+            if conn['type'] == 'loop_back':
+                blocks_with_loop_back.add(conn['from'])
+        
+        # 移除这些块的sequential连接
+        connections_to_remove = []
+        for i, conn in enumerate(self.connections):
+            if (conn['type'] == 'sequential' and 
+                conn['from'] in blocks_with_loop_back):
+                #logger.debug(f"🗑️ Removing conflicting sequential connection: {conn['from']} -> {conn['to']} (block has loop_back)")
+                connections_to_remove.append(i)
+        
+        # 从后往前删除，避免索引问题
+        for i in reversed(connections_to_remove):
+            del self.connections[i]
+        
+        # if connections_to_remove:
+            #logger.info(f"🗑️ Removed {len(connections_to_remove)} conflicting sequential connections")
+    
+    def _add_java_loop_back_connections(self):
+        """添加Java循环的loop_back连接"""
+        for block in self.blocks:
+            if block['type'] in ['for_statement', 'while_statement'] and block.get('is_control_structure'):
+                loop_block_id = block['id']
+                body_blocks = block.get('body_blocks', [])
+                
+                if body_blocks:
+                    # 找到循环体中的最后执行块
+                    last_blocks = self._find_java_loop_last_blocks(loop_block_id, body_blocks)
+                    
+                    # 为每个最后执行块添加loop_back连接
+                    for last_block_id in last_blocks:
+                        last_block = self.blocks[last_block_id]
+                        # 只有非跳转语句才添加loop_back
+                        if last_block['type'] not in ['return', 'break', 'continue', 'throw']:
+                            self._add_connection(last_block_id, loop_block_id, 'loop_back')
+    
+    def _find_java_loop_last_blocks(self, loop_block_id: int, body_blocks: List[int]) -> List[int]:
+        """找到Java循环体中的最后执行块"""
+        if not body_blocks:
+            return []
+        
+        # 获取所有循环块
+        all_loop_blocks = self._get_all_loop_blocks(loop_block_id, body_blocks, self.blocks[loop_block_id]['method'])
+        
+        last_blocks = []
+        
+        # 找到没有后续连接到循环内其他块的块
+        for block_id in all_loop_blocks:
+            has_internal_connection = False
+            
+            # 检查是否有连接到循环内其他块
+            for conn in self.connections:
+                if (conn['from'] == block_id and 
+                    conn['to'] in all_loop_blocks and
+                    conn['type'] not in ['loop_back']):
+                    has_internal_connection = True
+                    break
+            
+            # 如果没有内部连接，可能是最后执行块
+            if not has_internal_connection:
+                block = self.blocks[block_id]
+                # 排除控制结构头部（它们不是执行块的终点）
+                if block['type'] not in ['for_statement', 'while_statement', 'if_statement']:
+                    last_blocks.append(block_id)
+        
+        return last_blocks
+    
+    def _add_if_condition_false_connections(self):
+        """添加if语句的condition_false连接"""
+        for block in self.blocks:
+            # 只处理if语句
+            if block['type'] == 'if_statement' and block.get('is_control_structure'):
+                condition = block.get('condition', '')
+                then_blocks = block.get('then_blocks', [])
+                
+                #logger.debug(f"Processing if block {block['id']}: type={block['type']}, condition='{condition}', then_blocks={then_blocks}")
+                
+                # 找到if语句后的下一个块（condition_false目标）
+                false_target = self._find_if_false_target(block['id'], then_blocks)
+                if false_target is not None:
+                    #logger.debug(f"Adding condition_false connection: {block['id']} -> {false_target}")
+                    self._add_connection(block['id'], false_target, f'condition_false:{condition}')
+    
+    def _add_loop_condition_false_connections(self):
+        """添加循环的condition_false连接"""
+        for block in self.blocks:
+            if block['type'] in ['for_statement', 'while_statement'] and block.get('is_control_structure'):
+                condition = block.get('condition', '')
+                body_blocks = block.get('body_blocks', [])
+                
+                #logger.info(f"🔄 Processing loop block {block['id']} ({block['type']}) with body_blocks: {body_blocks}")
+                
+                # 检查现有连接
+                existing_true_conns = [conn for conn in self.connections if conn['from'] == block['id'] and conn['type'].startswith('condition_true:')]
+                existing_false_conns = [conn for conn in self.connections if conn['from'] == block['id'] and conn['type'].startswith('condition_false:')]
+                #logger.info(f"📋 Before removal - condition_true connections: {len(existing_true_conns)}, condition_false connections: {len(existing_false_conns)}")
+                
+                # 移除任何错误的condition_false连接（指向循环体内的）
+                self._remove_wrong_loop_connections(block['id'], body_blocks)
+                
+                # 再次检查连接
+                remaining_true_conns = [conn for conn in self.connections if conn['from'] == block['id'] and conn['type'].startswith('condition_true:')]
+                remaining_false_conns = [conn for conn in self.connections if conn['from'] == block['id'] and conn['type'].startswith('condition_false:')]
+                #logger.info(f"📋 After removal - condition_true connections: {len(remaining_true_conns)}, condition_false connections: {len(remaining_false_conns)}")
+                
+                # 找到循环后的下一个块（condition_false目标）
+                false_target = self._find_loop_false_target(block['id'], body_blocks)
+                if false_target is not None:
+                    #logger.info(f"🎯 Adding condition_false connection: {block['id']} -> {false_target} (condition: {condition})")
+                    self._add_connection(block['id'], false_target, f'condition_false:{condition}')
+    
+    def _remove_wrong_loop_connections(self, loop_block_id: int, body_blocks: List[int]):
+        """移除循环块的错误连接"""
+        # 移除condition_false指向循环体内的错误连接
+        wrong_connections = []
+        for i, conn in enumerate(self.connections):
+            if (conn['from'] == loop_block_id and 
+                conn['type'].startswith('condition_false:') and
+                conn['to'] in body_blocks):
+                #logger.info(f"🚫 Found wrong condition_false connection to remove: {conn}")
+                wrong_connections.append(i)
+        
+        # 从后往前删除，避免索引问题
+        for i in reversed(wrong_connections):
+            #logger.info(f"🗑️ Removing wrong connection at index {i}: {self.connections[i]}")
+            del self.connections[i]
+    
+    def _find_if_false_target(self, if_block_id: int, then_blocks: List[int]) -> Optional[int]:
+        """找到if语句condition_false的目标块（参考Python CFG builder思路）"""
+        if_block = self.blocks[if_block_id]
+        method_name = if_block['method']
+        
+        # 首先查找紧接着的else分支
+        else_block = self._find_corresponding_else_block(if_block_id, then_blocks)
+        if else_block is not None:
+            return else_block
+        
+        # 检查if语句是否在循环体中
+        parent_loop = self._find_parent_loop_for_if(if_block_id)
+        if parent_loop is not None:
+            #logger.info(f"🔄 If block {if_block_id} is inside loop block {parent_loop}")
+            
+            # 特殊情况：检查是否是循环体的第一个语句（即循环体直接以if开始）
+            parent_loop_block = self.blocks[parent_loop]
+            body_blocks = parent_loop_block.get('body_blocks', [])
+            
+            if body_blocks and body_blocks[0] == if_block_id:
+                # 这是循环体的第一个if语句
+                #logger.info(f"🎯 If block {if_block_id} is first statement in loop body")
+                
+                # 对于循环体第一个if语句，如果没有else分支，直接loop back到循环头
+                # 这是最符合Java语义的处理方式
+                #logger.info(f"🔄 First if in loop body without else, loop back: {if_block_id} -> {parent_loop}")
+                return parent_loop
+            else:
+                # 不是第一个语句，使用原来的逻辑
+                next_sibling = self._find_next_sibling_in_loop_body(if_block_id, parent_loop)
+                if next_sibling is not None:
+                    #logger.info(f"🎯 Found next sibling in loop: {if_block_id} -> {next_sibling}")
+                    return next_sibling
+                else:
+                    # 没有同级下一个语句，loop back到循环头
+                    #logger.info(f"🔄 No next sibling, loop back to parent loop: {if_block_id} -> {parent_loop}")
+                    return parent_loop
+        
+        # 不在循环中，使用原来的逻辑
+        for block in self.blocks:
+            if (block['id'] > if_block_id and 
+                block['method'] == method_name and
+                block['id'] not in then_blocks):
+                return block['id']
+        
+        return None
+    
+    def _find_true_sibling_after_if(self, if_block_id: int, parent_loop_id: int, then_blocks: List[int]) -> Optional[int]:
+        """查找if语句后真正的同级语句（不在then分支内）"""
+        parent_loop_block = self.blocks[parent_loop_id]
+        body_blocks = parent_loop_block.get('body_blocks', [])
+        
+        # 收集所有可能属于if语句的嵌套块
+        all_nested_blocks = set(then_blocks)
+        
+        # 从if语句开始，查找所有可能属于该if语句的块
+        # 假设从if_block_id到下一个控制结构之间的所有块都属于当前if
+        for i, block_id in enumerate(body_blocks):
+            if block_id == if_block_id:
+                # 从if语句之后开始检查
+                for j in range(i + 1, len(body_blocks)):
+                    candidate_id = body_blocks[j]
+                    candidate_block = self.blocks[candidate_id]
+                    
+                    # 如果遇到另一个控制结构，说明找到了真正的同级语句
+                    if candidate_block['type'] in ['if_statement', 'for_statement', 'while_statement']:
+                        #logger.info(f"✅ Found control structure sibling: {candidate_id}")
+                        return candidate_id
+                    
+                    # 如果遇到简单语句且不在then_blocks中，可能是同级语句
+                    if candidate_id not in all_nested_blocks:
+                        #logger.info(f"✅ Found simple statement sibling: {candidate_id}")
+                        return candidate_id
+                
+                break
+        
+        #logger.info(f"❌ No true sibling found after if {if_block_id}")
+        return None
+    
+    def _find_parent_loop_for_if(self, if_block_id: int) -> Optional[int]:
+        """找到包含if语句的父循环块"""
+        if_block = self.blocks[if_block_id]
+        method_name = if_block['method']
+        
+        # 查找同一方法中的所有循环块
+        for block in self.blocks:
+            if (block['method'] == method_name and 
+                block['type'] in ['for_statement', 'while_statement'] and
+                block['id'] < if_block_id):
+                
+                # 检查if块是否在这个循环的body_blocks中
+                body_blocks = block.get('body_blocks', [])
+                if if_block_id in body_blocks:
+                    #logger.debug(f"Found parent loop {block['id']} for if block {if_block_id}")
+                    return block['id']
+        
+        return None
+    
+    def _find_next_sibling_in_loop_body(self, if_block_id: int, parent_loop_id: int) -> Optional[int]:
+        """在循环体中找到if语句的下一个真正同级语句"""
+        parent_loop = self.blocks[parent_loop_id]
+        body_blocks = parent_loop.get('body_blocks', [])
+        
+        # 获取if语句的then分支
+        if_block = self.blocks[if_block_id]
+        then_blocks = if_block.get('then_blocks', [])
+        
+        #logger.debug(f"🔍 Looking for sibling of if block {if_block_id}, then_blocks: {then_blocks}")
+        
+        # 在body_blocks中找到if_block的位置
+        try:
+            if_index = body_blocks.index(if_block_id)
+        except ValueError:
+            return None
+        
+        # 计算需要跳过的所有嵌套块（包括then分支内的所有块）
+        nested_blocks = set(then_blocks)
+        
+        # 递归找到then分支内所有嵌套的if语句的then分支
+        self._collect_all_nested_blocks(then_blocks, nested_blocks)
+        
+        #logger.debug(f"🔍 All nested blocks to skip: {sorted(nested_blocks)}")
+        
+        # 从if_index+1开始查找，跳过所有嵌套块
+        for i in range(if_index + 1, len(body_blocks)):
+            candidate_block_id = body_blocks[i]
+            
+            # 如果这个块不在嵌套块中，说明它是真正的同级语句
+            if candidate_block_id not in nested_blocks:
+                #logger.debug(f"✅ Found true sibling block {candidate_block_id} for if block {if_block_id}")
+                return candidate_block_id
+        
+        # 没有找到同级下一个语句
+        #logger.debug(f"❌ No true sibling found for if block {if_block_id} in loop {parent_loop_id}")
+        return None
+    
+    def _collect_all_nested_blocks(self, block_ids: List[int], nested_blocks: set):
+        """递归收集所有嵌套块"""
+        for block_id in block_ids:
+            if block_id < len(self.blocks):
+                block = self.blocks[block_id]
+                if block['type'] == 'if_statement':
+                    # 如果是if语句，递归收集其then分支
+                    then_blocks = block.get('then_blocks', [])
+                    for then_block_id in then_blocks:
+                        nested_blocks.add(then_block_id)
+                    self._collect_all_nested_blocks(then_blocks, nested_blocks)
+    
+    def _find_corresponding_else_block(self, if_block_id: int, then_blocks: List[int]) -> Optional[int]:
+        """找到if语句对应的else分支的第一个块"""
+        if_block = self.blocks[if_block_id]
+        method_name = if_block['method']
+        
+        # 启发式方法：对于if语句后跟for循环的情况
+        # 如果then_blocks只有一个for循环，且后面紧接着另一个for循环
+        # 那么第二个for循环很可能是else分支
+        if (then_blocks and len(then_blocks) == 1):
+            first_then_block = self.blocks[then_blocks[0]]
+            if first_then_block['type'] == 'for_statement':
+                # 查找if分支之后可能的else分支
+                # 跳过if分支内的所有块，找到下一个可能的control structure
+                for block in self.blocks:
+                    if (block['id'] > if_block_id and 
+                        block['method'] == method_name and
+                        block['id'] not in then_blocks):
+                        # 如果找到另一个for循环，很可能是else分支
+                        if block['type'] == 'for_statement':
+                            return block['id']
+                        # 如果找到return语句，说明没有else分支
+                        elif block['type'] == 'return':
+                            break
+        
+        return None
+    
+    def _find_loop_false_target(self, loop_block_id: int, body_blocks: List[int]) -> Optional[int]:
+        """找到循环condition_false的目标块"""
+        loop_block = self.blocks[loop_block_id]
+        method_name = loop_block['method']
+        
+        # 找到循环的同级下一步：
+        # 1. 找到所有属于循环的块（包括嵌套的控制结构）
+        all_loop_blocks = self._get_all_loop_blocks(loop_block_id, body_blocks, method_name)
+        
+        # 2. 找到循环后第一个不属于循环的块
+        for block in self.blocks:
+            if (block['id'] > loop_block_id and 
+                block['method'] == method_name and
+                block['id'] not in all_loop_blocks):
+                return block['id']
+        
+        return None
+    
+    def _get_all_loop_blocks(self, loop_block_id: int, body_blocks: List[int], method_name: str) -> List[int]:
+        """获取循环的所有块（包括循环体内的嵌套结构）"""
+        if not body_blocks:
+            return []
+        
+        all_loop_blocks = list(body_blocks)
+        min_body = min(body_blocks)
+        max_body = max(body_blocks)
+        
+        # 查找body_blocks之间的所有块（可能是嵌套的控制结构）
+        for block in self.blocks:
+            if (block['id'] > min_body and 
+                block['id'] < max_body and
+                block['method'] == method_name and
+                block['id'] not in all_loop_blocks):
+                all_loop_blocks.append(block['id'])
+        
+        return sorted(all_loop_blocks)
     
     def _find_loop_exit_target(self, loop_info: Dict) -> Optional[int]:
         """找到循环的退出目标"""
@@ -947,7 +1520,7 @@ class JavaCFG:
         
         # 处理每个方法调用
         for method_call in methods_to_process:
-            logger.info(f"发现方法调用: {method_call}")
+            #logger.info(f"发现方法调用: {method_call}")
             self._build_method_cfg(method_call, visited_methods.copy())
     
     def _generate_cfg_text(self) -> str:
@@ -1041,25 +1614,25 @@ class JavaCFG:
     
     def print_features(self):
         """打印CFG特征信息"""
-        logger.info("=================Improved Java Method CFG=================")
-        logger.info(f"目标类: {self.target_class}")
-        logger.info(f"目标方法: {self.target_method}")
-        logger.info(f"方法签名: {self.method_signature}")
-        logger.info(f"所有类: {list(self.all_classes.keys())}")
-        logger.info(f"所有方法: {list(self.all_methods.keys())}")
-        logger.info(f"块数量: {self.block_num}")
-        logger.info(f"连接数量: {len(self.connections)}")
+        #logger.info("=================Improved Java Method CFG=================")
+        #logger.info(f"目标类: {self.target_class}")
+        #logger.info(f"目标方法: {self.target_method}")
+        #logger.info(f"方法签名: {self.method_signature}")
+        #logger.info(f"所有类: {list(self.all_classes.keys())}")
+        #logger.info(f"所有方法: {list(self.all_methods.keys())}")
+        #logger.info(f"块数量: {self.block_num}")
+        #logger.info(f"连接数量: {len(self.connections)}")
         
-        logger.info("块信息:")
-        for block in self.blocks:
-            logger.info(f"  Block {block['id']} ({block['type']}): {block['code'][:50]}...")
+        #logger.info("块信息:")
+        # for block in self.blocks: 
+            #logger.info(f"  Block {block['id']} ({block['type']}): {block['code'][:50]}...")
         
-        logger.info("连接信息:")
-        for conn in self.connections:
-            logger.info(f"  {conn['from']} --{conn['type']}--> {conn['to']}")
+        #logger.info("连接信息:")
+        # for conn in self.connections:
+            #logger.info(f"  {conn['from']} --{conn['type']}--> {conn['to']}")
         
-        logger.info(f"CFG文本表示:\n{self.cfg_text}")
-        logger.info("=================Improved Java Method CFG=================")
+        #logger.info(f"CFG文本表示:\n{self.cfg_text}")
+        #logger.info("=================Improved Java Method CFG=================")
 
 
 # 测试函数
