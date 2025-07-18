@@ -1,6 +1,5 @@
-from typing import List
+def generate_integers(a, b):
+    lower = max(2, min(a, b))
+    upper = min(8, max(a, b))
 
-
-def mean_absolute_deviation(numbers: List[float]) -> float:
-    mean = sum(numbers) / len(numbers)
-    return sum(abs(x - mean) for x in numbers) / mean
+    return [i for i in range(lower, upper) if i % 2 == 0]

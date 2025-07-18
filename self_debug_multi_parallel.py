@@ -389,10 +389,10 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     
     dataset_file = "dataset_test/humanevalfix/humanevalpack.jsonl"
-    max_workers = 4  # 适中的并发数，考虑到多轮调试的复杂性
+    max_workers = 8  # 适中的并发数，考虑到多轮调试的复杂性
     task_timeout = 300  # 每个任务5分钟超时（多轮调试需要更多时间）
     overall_timeout = 3600  # 总体60分钟超时
-    task_limit = 5  # 限制处理任务数，用于测试
+    task_limit = None  # 限制处理任务数，用于测试
     
     safe_print("Starting multi-round batch debugging of HumanEval dataset...")
     safe_print(f"Loading dataset from {dataset_file}")
