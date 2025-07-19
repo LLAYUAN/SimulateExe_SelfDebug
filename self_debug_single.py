@@ -3,13 +3,13 @@ from complete_cfg_builder import TextCFG
 from utils import extract_buggy_code
 from chat import chat_selfdebug
 
-def selfdebug():
+def selfdebug(task_id):
     """测试extract_testcases函数"""
     
     # 读取第i行数据
     with open("data/humanevalfix/humanevalpack.jsonl", "r", encoding="utf-8") as f:
         for i, line in enumerate(f, 1):
-            if i == 42:
+            if i == task_id + 1:
                 data = json.loads(line.strip())
                 break
         else:
@@ -56,4 +56,4 @@ def selfdebug():
 
 if __name__ == "__main__":
     print("Starting to test new functions...")
-    selfdebug() 
+    selfdebug(42) 

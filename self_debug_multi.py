@@ -71,14 +71,14 @@ def selfdebug_multi(task_id: int = 5):
     """
     多轮对话调试函数
     Args:
-        task_id: 要调试的任务ID（数据文件中的行号）
+        task_id: 要调试的任务ID
     """
     logger.info(f"开始多轮调试任务 {task_id}")
     
     # 读取数据
     with open("dataset_test/humanevalfix/humanevalpack.jsonl", "r", encoding="utf-8") as f:
         for i, line in enumerate(f, 1):
-            if i == task_id:
+            if i == task_id + 1:
                 data = json.loads(line.strip())
                 break
         else:
