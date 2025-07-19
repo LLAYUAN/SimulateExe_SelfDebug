@@ -10,7 +10,7 @@ import time
 import random
 import argparse
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from loguru import logger
 import subprocess
 import sys
@@ -41,7 +41,7 @@ def slim_error_message(err_msg: str, token_limit: int = 200) -> str:
     
     return '\n'.join(slim_err_msg_lines)
 
-def extract_java_buggy_code(bug_data: dict) -> str:
+def extract_java_buggy_code(bug_data: Dict) -> str:
     """
     提取Java的buggy代码
     Args:
@@ -60,7 +60,7 @@ def extract_java_buggy_code(bug_data: dict) -> str:
     
     return full_code
 
-def extract_java_test_info(bug_data: dict) -> tuple[str, str]:
+def extract_java_test_info(bug_data: Dict) -> Tuple[str, str]:
     """
     从trigger_test中随机选择一个测试用例和错误信息（按照gen_solution_prompt.py的方式）
     Args:
@@ -84,7 +84,7 @@ def extract_java_test_info(bug_data: dict) -> tuple[str, str]:
     
     return "", ""
 
-def selfdebug_java_single(bug_name: str, bug_data: dict) -> Optional[str]:
+def selfdebug_java_single(bug_name: str, bug_data: Dict) -> Optional[str]:
     """
     使用静态分析方法处理单个Java bug
     Args:
@@ -209,7 +209,7 @@ def selfdebug_java_single(bug_name: str, bug_data: dict) -> Optional[str]:
         logger.error(f"Static analysis debug failed for {bug_name}: {e}")
         return None
 
-def process_defects4j_dataset(dataset_path: str, output_path: str, limit: int = None) -> dict:
+def process_defects4j_dataset(dataset_path: str, output_path: str, limit: int = None) -> Dict:
     """
     处理整个defects4j数据集
     Args:
