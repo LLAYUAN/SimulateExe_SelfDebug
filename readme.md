@@ -56,14 +56,20 @@ SimulateExe_SelfDebug 是一个基于大语言模型模拟执行自动代码调�
   - validation结果保存在`dataset_test/SRepair/results/sf/defects4j_validation_results`
 - **使用方法**：
   ```bash
-  # 处理所有缺陷
+  # 修复并验证
+  python self_debug_multi_defects4j.py --validate
+
+  # 限制处理数量
+  python self_debug_multi_defects4j.py --limit 10 --validate
+
+  # 仅获得修复后的代码
   python self_debug_multi_defects4j.py
   
-  # 限制处理数量
-  python self_debug_multi_defects4j.py --limit 10
-  
-  # 包含验证
-  python self_debug_multi_defects4j.py --validate
+  # 仅验证
+  python self_debug_multi_defects4j.py --validate-only
+
+  # 仅解析验证结果
+  python self_debug_multi_defects4j.py --parse-results
   ```
 - **注意**：
   - 由于defects4j的函数级数据集是代码片段，函数定义不完整，所以无法按行模拟执行，因此直接传入CFG然后让LLM analyze step by step，并未严格模拟执行获得输出。
