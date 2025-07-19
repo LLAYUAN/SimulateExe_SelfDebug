@@ -47,7 +47,7 @@ SimulateExe_SelfDebug 是一个基于大语言模型模拟执行自动代码调�
   python self_debug_multi_parallel.py
   ```
 
-#### 7. `self_debug_multi_defects4j.py` - Java缺陷处理脚本
+#### 7. `self_debug_defects4j_parallel.py` - Java缺陷处理脚本
 - **简介**：处理Defects4J数据集中的函数级Java代码缺陷
 - **说明**：
   - 对defects4j中函数级数据进行代码修复
@@ -57,19 +57,19 @@ SimulateExe_SelfDebug 是一个基于大语言模型模拟执行自动代码调�
 - **使用方法**：
   ```bash
   # 修复并验证
-  python self_debug_multi_defects4j.py --validate
+  python self_debug_defects4j_parallel.py --validate
 
   # 限制处理数量
-  python self_debug_multi_defects4j.py --limit 10 --validate
+  python self_debug_defects4j_parallel.py --limit 10 --validate
 
   # 仅获得修复后的代码
-  python self_debug_multi_defects4j.py
+  python self_debug_defects4j_parallel.py
   
   # 仅验证
-  python self_debug_multi_defects4j.py --validate-only
+  python self_debug_defects4j_parallel.py --validate-only
 
   # 仅解析验证结果
-  python self_debug_multi_defects4j.py --parse-results
+  python self_debug_defects4j_parallel.py --parse-results
   ```
 - **注意**：
   - 由于defects4j的函数级数据集是代码片段，函数定义不完整，所以无法按行模拟执行，因此直接传入CFG然后让LLM analyze step by step，并未严格模拟执行获得输出。
