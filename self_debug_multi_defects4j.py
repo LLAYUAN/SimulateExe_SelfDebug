@@ -2,6 +2,7 @@
 """
 使用selfdebug架构处理defects4j-sf数据集中的Java代码
 替代SRepair中的gen_solution和gen_patch，并使用sf_val_d4j验证正确率
+支持并行处理和统计修复正确率
 """
 
 import json
@@ -14,6 +15,8 @@ from typing import Dict, List, Optional, Tuple
 from loguru import logger
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 from java_cfg_builder import JavaCFG
 from utils import write_str_to_file
 from chat import chat_java_fragment_debug
@@ -209,12 +212,32 @@ def selfdebug_java_single(bug_name: str, bug_data: Dict) -> Optional[str]:
         logger.error(f"Static analysis debug failed for {bug_name}: {e}")
         return None
 
-def process_defects4j_dataset(dataset_path: str, output_path: str, limit: int = None) -> Dict:
+def process_single_bug_task(task_data: Tuple[str, Dict]) -> Tuple[str, Optional[str], bool]:
     """
-    处理整个defects4j数据集
+    并行处理单个bug任务
+    Args:
+        task_data: (bug_name, bug_data) 元组
+    Returns:
+        (bug_name, corrected_code, success) 元组
+    """
+    bug_name, bug_data = task_data
+    
+    try:
+        corrected_code = selfdebug_java_single(bug_name, bug_data)
+        success = corrected_code is not None and corrected_code.strip() != bug_data['buggy'].strip()
+        return bug_name, corrected_code, success
+    except Exception as e:
+        logger.error(f"Error processing {bug_name}: {e}")
+        return bug_name, None, False
+
+def process_defects4j_dataset_parallel(dataset_path: str, output_path: str, limit: int = None, max_workers: int = None) -> Dict:
+    """
+    并行处理整个defects4j数据集
     Args:
         dataset_path: 数据集路径
         output_path: 输出路径
+        limit: 限制处理的bug数量
+        max_workers: 最大并行worker数量
     Returns:
         处理结果字典
     """
@@ -233,30 +256,71 @@ def process_defects4j_dataset(dataset_path: str, output_path: str, limit: int = 
         bug_names = bug_names[:limit]
         logger.info(f"Limited processing to first {limit} bugs")
     
+    # 设置并行worker数量
+    if max_workers is None:
+        max_workers = min(multiprocessing.cpu_count(), len(bug_names))
+    
+    logger.info(f"Using {max_workers} parallel workers")
+    
+    # 准备任务数据
+    tasks = [(bug_name, dataset[bug_name]) for bug_name in bug_names]
+    
     results = {}
     patches_generated = 0
+    successful_fixes = 0
     
-    for i, bug_name in enumerate(bug_names, 1):
-        logger.info(f"=== Processing bug {i}/{len(bug_names)}: {bug_name} ===")
+    # 并行处理
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # 提交所有任务
+        future_to_bug = {executor.submit(process_single_bug_task, task): task[0] for task in tasks}
         
-        try:
-            corrected_code = selfdebug_java_single(bug_name, dataset[bug_name])
+        # 收集结果
+        for i, future in enumerate(as_completed(future_to_bug), 1):
+            bug_name = future_to_bug[future]
             
-            if corrected_code and corrected_code != dataset[bug_name]['buggy']:
-                results[bug_name] = {
-                    'patches': [corrected_code],
-                    'original_buggy': dataset[bug_name]['buggy'],
-                    'bug_info': {
-                        'loc': dataset[bug_name]['loc'],
-                        'start': dataset[bug_name]['start'],
-                        'end': dataset[bug_name]['end']
+            try:
+                bug_name_result, corrected_code, success = future.result()
+                
+                logger.info(f"=== Completed bug {i}/{len(bug_names)}: {bug_name_result} ===")
+                
+                if corrected_code and corrected_code != dataset[bug_name_result]['buggy']:
+                    results[bug_name_result] = {
+                        'patches': [corrected_code],
+                        'original_buggy': dataset[bug_name_result]['buggy'],
+                        'bug_info': {
+                            'loc': dataset[bug_name_result]['loc'],
+                            'start': dataset[bug_name_result]['start'],
+                            'end': dataset[bug_name_result]['end']
+                        },
+                        'patch_generated': True
                     }
-                }
-                patches_generated += 1
-                logger.info(f"📝 Generated patch for {bug_name} (validation required)")
-            else:
-                logger.warning(f"❌ No patch generated for {bug_name}")
-                # 为了能够进行验证，即使失败也要记录原始代码
+                    patches_generated += 1
+                    if success:
+                        successful_fixes += 1
+                    logger.info(f"📝 Generated patch for {bug_name_result} (validation required)")
+                else:
+                    logger.warning(f"❌ No patch generated for {bug_name_result}")
+                    # 为了能够进行验证，即使失败也要记录原始代码
+                    results[bug_name_result] = {
+                        'patches': [dataset[bug_name_result]['buggy']],  # 使用原始代码
+                        'original_buggy': dataset[bug_name_result]['buggy'],
+                        'bug_info': {
+                            'loc': dataset[bug_name_result]['loc'],
+                            'start': dataset[bug_name_result]['start'],
+                            'end': dataset[bug_name_result]['end']
+                        },
+                        'patch_generated': False
+                    }
+                
+                # 定期保存中间结果
+                if i % 10 == 0:
+                    logger.info(f"Progress: {i}/{len(bug_names)} completed, saving intermediate results...")
+                    with open(output_path, 'w', encoding='utf-8') as f:
+                        json.dump(results, f, indent=2, ensure_ascii=False)
+                        
+            except Exception as e:
+                logger.error(f"Error processing result for {bug_name}: {e}")
+                # 记录失败的情况
                 results[bug_name] = {
                     'patches': [dataset[bug_name]['buggy']],  # 使用原始代码
                     'original_buggy': dataset[bug_name]['buggy'],
@@ -264,28 +328,16 @@ def process_defects4j_dataset(dataset_path: str, output_path: str, limit: int = 
                         'loc': dataset[bug_name]['loc'],
                         'start': dataset[bug_name]['start'],
                         'end': dataset[bug_name]['end']
-                    }
+                    },
+                    'patch_generated': False
                 }
-        
-        except Exception as e:
-            logger.error(f"Error processing {bug_name}: {e}")
-            # 记录失败的情况
-            results[bug_name] = {
-                'patches': [dataset[bug_name]['buggy']],  # 使用原始代码
-                'original_buggy': dataset[bug_name]['buggy'],
-                'bug_info': {
-                    'loc': dataset[bug_name]['loc'],
-                    'start': dataset[bug_name]['start'],
-                    'end': dataset[bug_name]['end']
-                }
-            }
     
-    logger.info(f"=== Processing completed ===")
+    logger.info(f"=== Parallel processing completed ===")
     logger.info(f"Total processed: {len(bug_names)}")
     logger.info(f"Patches generated: {patches_generated}")
     logger.info(f"Patch generation rate: {patches_generated/len(bug_names)*100:.2f}%")
     
-    # 保存结果
+    # 保存最终结果
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     
@@ -333,6 +385,96 @@ def run_validation(patch_file: str, dataset_path: str, output_dir: str):
     except Exception as e:
         logger.error(f"❌ Error running validation: {e}")
 
+def parse_validation_results(validation_output_dir: str) -> Dict:
+    """
+    解析验证结果并统计修复正确率
+    Args:
+        validation_output_dir: 验证结果输出目录
+    Returns:
+        统计结果字典
+    """
+    logger.info(f"Parsing validation results from {validation_output_dir}")
+    
+    if not os.path.exists(validation_output_dir):
+        logger.error(f"Validation output directory not found: {validation_output_dir}")
+        return {}
+    
+    validation_files = [f for f in os.listdir(validation_output_dir) if f.endswith('-validated.jsonl')]
+    
+    total_bugs = 0
+    plausible_fixes = 0
+    correct_fixes = 0
+    uncompilable_fixes = 0
+    timeout_fixes = 0
+    
+    detailed_results = {}
+    
+    for val_file in validation_files:
+        val_file_path = os.path.join(validation_output_dir, val_file)
+        bug_name = val_file.replace('-validated.jsonl', '')
+        
+        try:
+            with open(val_file_path, 'r', encoding='utf-8') as f:
+                bug_results = json.load(f)
+            
+            for patch_result in bug_results:
+                total_bugs += 1
+                status = patch_result.get('patch_status', 'UNKNOWN')
+                
+                detailed_results[f"{bug_name}_patch_{patch_result.get('val_cnt', 1)}"] = {
+                    'bug_name': bug_name,
+                    'status': status,
+                    'failing_tests': patch_result.get('failing_tests', {}),
+                    'patch_code': patch_result.get('patch_code', '')[:100] + '...'  # 只保留前100字符
+                }
+                
+                if status == 'PLAUSIBLE':
+                    plausible_fixes += 1
+                    correct_fixes += 1  # PLAUSIBLE 表示通过了所有测试
+                elif status == 'UNCOMPILABLE':
+                    uncompilable_fixes += 1
+                elif 'TIMEOUT' in status:
+                    timeout_fixes += 1
+        
+        except Exception as e:
+            logger.error(f"Error parsing validation file {val_file}: {e}")
+            continue
+    
+    # 计算统计结果
+    patch_generation_rate = 0
+    plausible_rate = 0
+    correct_rate = 0
+    
+    if total_bugs > 0:
+        plausible_rate = (plausible_fixes / total_bugs) * 100
+        correct_rate = (correct_fixes / total_bugs) * 100
+    
+    statistics = {
+        'total_bugs_validated': total_bugs,
+        'plausible_fixes': plausible_fixes,
+        'correct_fixes': correct_fixes,
+        'uncompilable_fixes': uncompilable_fixes,
+        'timeout_fixes': timeout_fixes,
+        'other_fixes': total_bugs - plausible_fixes - uncompilable_fixes - timeout_fixes,
+        'plausible_rate': round(plausible_rate, 2),
+        'correct_rate': round(correct_rate, 2),
+        'detailed_results': detailed_results
+    }
+    
+    # 打印统计结果
+    logger.info("=== DEFECTS4J REPAIR STATISTICS ===")
+    logger.info(f"Total bugs validated: {total_bugs}")
+    logger.info(f"Plausible fixes: {plausible_fixes}")
+    logger.info(f"Correct fixes: {correct_fixes}")
+    logger.info(f"Uncompilable fixes: {uncompilable_fixes}")
+    logger.info(f"Timeout fixes: {timeout_fixes}")
+    logger.info(f"Other status fixes: {statistics['other_fixes']}")
+    logger.info(f"Plausible rate: {plausible_rate:.2f}%")
+    logger.info(f"Correct rate: {correct_rate:.2f}%")
+    logger.info("=" * 40)
+    
+    return statistics
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="Use static analysis architecture to process defects4j dataset")
@@ -344,10 +486,16 @@ def main():
                        help='Output path for generated patches')
     parser.add_argument('--validate', '-v', action='store_true',
                        help='Run validation after generating patches')
+    parser.add_argument('--validate-only', action='store_true',
+                       help='Only run validation on existing patch file (skip patch generation)')
     parser.add_argument('--val-output', type=str, default='dataset_test/SRepair/results/sf/defects4j_validation_results',
                        help='Output directory for validation results')
     parser.add_argument('--limit', '-l', type=int, default=None,
                        help='Limit the number of bugs to process (useful for debugging)')
+    parser.add_argument('--workers', '-w', type=int, default=None,
+                       help='Number of parallel workers (default: CPU count)')
+    parser.add_argument('--parse-results', action='store_true',
+                       help='Only parse existing validation results and show statistics')
     
     args = parser.parse_args()
     
@@ -356,8 +504,57 @@ def main():
     logger.info(f"Dataset: {args.dataset}")
     logger.info(f"Output: {args.output}")
     logger.info(f"Validate: {args.validate}")
+    logger.info(f"Validate only: {args.validate_only}")
     if args.limit:
         logger.info(f"Processing limit: {args.limit} bugs")
+    if args.workers:
+        logger.info(f"Parallel workers: {args.workers}")
+    
+    # 如果只是解析结果，直接解析并退出
+    if args.parse_results:
+        logger.info("🔍 Parsing existing validation results...")
+        statistics = parse_validation_results(args.val_output)
+        
+        # 保存统计结果
+        stats_file = os.path.join(os.path.dirname(args.output), 'repair_statistics.json')
+        with open(stats_file, 'w', encoding='utf-8') as f:
+            json.dump(statistics, f, indent=2, ensure_ascii=False)
+        logger.info(f"Statistics saved to {stats_file}")
+        return
+    
+    # 如果只是验证现有补丁
+    if args.validate_only:
+        logger.info("🔍 Validating existing patches only...")
+        
+        # 检查补丁文件是否存在
+        if not os.path.exists(args.output):
+            logger.error(f"Patch file not found: {args.output}")
+            logger.error("Please generate patches first or specify correct patch file path with --output")
+            return
+        
+        # 删除现有输出目录以避免冲突
+        if os.path.exists(args.val_output):
+            import shutil
+            logger.info(f"Removing existing validation output directory: {args.val_output}")
+            shutil.rmtree(args.val_output)
+        
+        # 直接运行验证
+        run_validation(args.output, args.dataset, args.val_output)
+        
+        # 解析验证结果
+        logger.info("🔍 Parsing validation results and calculating repair rates...")
+        time.sleep(5)  # 等待文件写入完成
+        
+        statistics = parse_validation_results(args.val_output)
+        
+        # 保存统计结果
+        stats_file = os.path.join(os.path.dirname(args.output), 'repair_statistics.json')
+        with open(stats_file, 'w', encoding='utf-8') as f:
+            json.dump(statistics, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"📊 Repair statistics saved to {stats_file}")
+        logger.info("Validation completed!")
+        return
     
     # 检查输入文件
     if not os.path.exists(args.dataset):
@@ -366,7 +563,7 @@ def main():
     
     # 处理数据集
     start_time = time.time()
-    results = process_defects4j_dataset(args.dataset, args.output, args.limit)
+    results = process_defects4j_dataset_parallel(args.dataset, args.output, args.limit, args.workers)
     processing_time = time.time() - start_time
     
     logger.info(f"Patch generation completed in {processing_time:.2f} seconds")
@@ -374,10 +571,32 @@ def main():
     # 运行验证
     if args.validate:
         logger.info("🔍 Starting validation with sf_val_d4j...")
+        
+        # 删除现有输出目录以避免冲突
+        if os.path.exists(args.val_output):
+            import shutil
+            logger.info(f"Removing existing validation output directory: {args.val_output}")
+            shutil.rmtree(args.val_output)
+        
         run_validation(args.output, args.dataset, args.val_output)
+        
+        # 等待验证完成后解析结果
+        logger.info("🔍 Parsing validation results and calculating repair rates...")
+        time.sleep(5)  # 等待文件写入完成
+        
+        statistics = parse_validation_results(args.val_output)
+        
+        # 保存统计结果
+        stats_file = os.path.join(os.path.dirname(args.output), 'repair_statistics.json')
+        with open(stats_file, 'w', encoding='utf-8') as f:
+            json.dump(statistics, f, indent=2, ensure_ascii=False)
+        
+        logger.info(f"📊 Repair statistics saved to {stats_file}")
+        
     else:
         logger.info("🔍 To validate patches, run with --validate flag")
-        logger.info("💡 Example: python selfdebug_java_defects4j.py --validate --val-output validation_results")
+        logger.info("💡 Example: python self_debug_multi_defects4j.py --validate --workers 4")
+        logger.info("💡 Or validate existing patches: python self_debug_multi_defects4j.py --validate-only")
     
     logger.info("All tasks completed!")
 
