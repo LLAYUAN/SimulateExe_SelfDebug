@@ -450,7 +450,7 @@ if __name__ == '__main__':
     candidate_patches = json.load(open(input_patch_file, 'r'))
     candidate_patches = shuffle_validated_patches(candidate_patches)
 
-    os.makedirs(output_result_dir)
+    os.makedirs(output_result_dir, exist_ok=True)
     with log_or_print(log_mode=args.log, log_path=log_file_path):
         validate_defects4j(candidate_patches)
         print(f'[TIME INFO] total_time = {int(time.time() - start_val_time)} s')
